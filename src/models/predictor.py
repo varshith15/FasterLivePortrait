@@ -43,12 +43,28 @@ class TensorRTPredictor:
     def __init__(self, **kwargs):
         """
         :param engine_path: The path to the serialized engine to load from disk.
+        :param grid_sample_plugin_path: The path to the grid_sample_3d plugin library.
         """
-        if platform.system().lower() == 'linux':
-            ctypes.CDLL("/home/user/grid-sample3d-trt-plugin/build/libgrid_sample_3d_plugin.so", mode=ctypes.RTLD_GLOBAL)
-        else:
-            ctypes.CDLL("./checkpoints/liveportrait_onnx/grid_sample_3d_plugin.dll", mode=ctypes.RTLD_GLOBAL,
-                        winmode=0)
+        grid_sample_plugin_path = kwargs.get("grid_sample_plugin_path")
+        if not grid_sample_plugin_path:
+            print("Warning: grid_sample_plugin_path not provided. Using default paths.")
+            if platform.system().lower() == 'linux':
+                grid_sample_plugin_path = "/home/user/grid-sample3d-trt-plugin/build/libgrid_sample_3d_plugin.so"
+            else:
+                grid_sample_plugin_path = "/home/user/grid-sample3d-trt-plugin/build/grid_sample_3d_plugin.dll"
+
+        if not os.path.exists(grid_sample_plugin_path):
+            raise FileNotFoundError(f"Grid sample plugin library not found at: {grid_sample_plugin_path}")
+
+        try:
+            if platform.system().lower() == 'linux':
+                ctypes.CDLL(grid_sample_plugin_path, mode=ctypes.RTLD_GLOBAL)
+            else:
+                ctypes.CDLL(grid_sample_plugin_path, mode=ctypes.RTLD_GLOBAL, winmode=0)
+            print(f"Successfully loaded grid sample plugin from: {grid_sample_plugin_path}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load grid sample plugin from {grid_sample_plugin_path}: {e}")
+
         # Load TRT engine
         self.logger = trt.Logger(trt.Logger.ERROR)
         trt.init_libnvinfer_plugins(self.logger, "")

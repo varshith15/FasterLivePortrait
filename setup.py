@@ -1,0 +1,40 @@
+from setuptools import setup, find_packages
+
+setup(
+    name='faster_live_portrait',
+    version='0.0.1',
+    author='Varshith B',
+    author_email='varshith15@gmail.com',
+    description='A package for Faster Live Portrait image animation. This is a fork of the original FasterLivePortrait repository.',
+    long_description=open('README.md').read(),
+    long_description_content_type='text/markdown',
+    url='https://github.com/varshith15/FasterLivePortrait',
+    package_dir={'': 'src'},
+    packages=find_packages(where='src'),
+    install_requires=[
+        'ffmpeg-python',
+        'omegaconf',
+        'onnx',
+        'pycuda',
+        'numpy',
+        'opencv-python',
+        'gradio',
+        'scikit-image',
+        'insightface',
+        'huggingface_hub[cli]',
+        'mediapipe',
+        'torchgeometry',
+        'soundfile',
+        'munch',
+        'phonemizer',
+        'kokoro>=0.3.4',
+        'misaki[ja]',
+        'misaki[zh]',
+    ],
+    classifiers=[
+        'Programming Language :: Python :: 3',
+        'License :: OSI Approved :: MIT License', # Choose an appropriate license
+        'Operating System :: OS Independent',
+    ],
+    python_requires='>=3.11',
+) 

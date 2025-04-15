@@ -4,6 +4,8 @@
 # @Project : FasterLivePortrait
 # @FileName: faster_live_portrait_pipeline.py
 
+# TODO: cleanup the code further, it was written for source video and driving image -- we need source image and driving image
+
 import copy
 import os.path
 import traceback
@@ -36,17 +38,17 @@ class FasterLivePortraitPipeline:
             if key in self.cfg.infer_params:
                 if self.cfg.infer_params[key] != args_user[key]:
                     update_ret = True
-                print("update infer cfg {} from {} to {}".format(key, self.cfg.infer_params[key], args_user[key]))
+                logging.info("update infer cfg {} from {} to {}".format(key, self.cfg.infer_params[key], args_user[key]))
                 self.cfg.infer_params[key] = args_user[key]
             elif key in self.cfg.crop_params:
                 if self.cfg.crop_params[key] != args_user[key]:
                     update_ret = True
-                print("update crop cfg {} from {} to {}".format(key, self.cfg.crop_params[key], args_user[key]))
+                logging.info("update crop cfg {} from {} to {}".format(key, self.cfg.crop_params[key], args_user[key]))
                 self.cfg.crop_params[key] = args_user[key]
             else:
                 if key in self.cfg.infer_params and self.cfg.infer_params[key] != args_user[key]:
                     update_ret = True
-                print("add {}:{} to infer cfg".format(key, args_user[key]))
+                logging.info("add {}:{} to infer cfg".format(key, args_user[key]))
                 self.cfg.infer_params[key] = args_user[key]
         return update_ret
 
@@ -62,24 +64,24 @@ class FasterLivePortraitPipeline:
 
     def init_models(self, **kwargs):
         if not kwargs.get("is_animal", False):
-            print("load Human Model >>>")
+            logging.info("load Human Model >>>")
             self.is_animal = False
             self.model_dict = {}
             for model_name in self.cfg.models:
-                print(f"loading model: {model_name}")
-                print(self.cfg.models[model_name])
+                logging.info(f"loading model: {model_name}")
+                logging.info(self.cfg.models[model_name])
                 self.model_dict[model_name] = getattr(models, self.cfg.models[model_name]["name"])(
                     **self.cfg.models[model_name])
         else:
-            print("load Animal Model >>>")
+            logging.info("load Animal Model >>>")
             self.is_animal = True
             self.model_dict = {}
             from src.utils.animal_landmark_runner import XPoseRunner
             from src.utils.utils import make_abs_path
             checkpoint_dir = None
             for model_name in self.cfg.animal_models:
-                print(f"loading model: {model_name}")
-                print(self.cfg.animal_models[model_name])
+                logging.info(f"loading model: {model_name}")
+                logging.info(self.cfg.animal_models[model_name])
                 if checkpoint_dir is None and isinstance(self.cfg.animal_models[model_name].model_path, str):
                     checkpoint_dir = os.path.dirname(self.cfg.animal_models[model_name].model_path)
                 self.model_dict[model_name] = getattr(models, self.cfg.animal_models[model_name]["name"])(
@@ -102,7 +104,6 @@ class FasterLivePortraitPipeline:
         self.R_d_smooth = utils.OneEuroFilter(4, 0.3)
         self.exp_smooth = utils.OneEuroFilter(4, 0.3)
 
-        ## 记录source的信息
         self.source_path = None
         self.src_infos = []
         self.src_imgs = []
@@ -112,14 +113,12 @@ class FasterLivePortraitPipeline:
     def calc_combined_eye_ratio(self, c_d_eyes_i, source_lmk):
         c_s_eyes = calc_eye_close_ratio(source_lmk[None])
         c_d_eyes_i = np.array(c_d_eyes_i).reshape(1, 1)
-        # [c_s,eyes, c_d,eyes,i]
         combined_eye_ratio_tensor = np.concatenate([c_s_eyes, c_d_eyes_i], axis=1)
         return combined_eye_ratio_tensor
 
     def calc_combined_lip_ratio(self, c_d_lip_i, source_lmk):
         c_s_lip = calc_lip_close_ratio(source_lmk[None])
         c_d_lip_i = np.array(c_d_lip_i).reshape(1, 1)  # 1x1
-        # [c_s,lip, c_d,lip,i]
         combined_lip_ratio_tensor = np.concatenate([c_s_lip, c_d_lip_i], axis=1)  # 1x2
         return combined_lip_ratio_tensor
 
@@ -259,9 +258,10 @@ class FasterLivePortraitPipeline:
                     M = torch.from_numpy(crop_info['M_c2o']).to(self.device)
                     src_infos[i].append(M)
                 self.src_infos.append(src_infos[:])
-            print(f"finish process source:{source_path} >>>>>>>>")
+            logging.info(f"finish process source:{source_path} >>>>>>>>")
             return len(self.src_infos) > 0
         except Exception as e:
+            logging.exception(f"Error preparing source {source_path}: {e}")
             traceback.print_exc()
             return False
 
@@ -279,7 +279,7 @@ class FasterLivePortraitPipeline:
 
             src_faces = []
             if self.is_animal:
-                 print("Animal face detection from NumPy array not implemented yet.")
+                 logging.warning("Animal face detection from NumPy array not implemented yet.")
                  return False
             else:
                 src_faces = self.model_dict["face_analysis"].predict(img_bgr)

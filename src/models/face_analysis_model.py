@@ -92,12 +92,15 @@ class FaceAnalysisModel:
         self.predict_type = kwargs.get("predict_type", "trt")
         self.device = torch.cuda.current_device()
         self.cudaStream = torch.cuda.current_stream().cuda_stream
+        grid_sample_plugin_path=kwargs.get("grid_sample_plugin_path", None)
 
         assert self.model_paths
-        self.face_det = get_predictor(predict_type=self.predict_type, model_path=self.model_paths[0])
+        self.face_det = get_predictor(predict_type=self.predict_type, model_path=self.model_paths[0],
+                                       grid_sample_plugin_path=grid_sample_plugin_path)
         self.face_det.input_spec()
         self.face_det.output_spec()
-        self.face_pose = get_predictor(predict_type=self.predict_type, model_path=self.model_paths[1])
+        self.face_pose = get_predictor(predict_type=self.predict_type, model_path=self.model_paths[1],
+                                       grid_sample_plugin_path=grid_sample_plugin_path)
         self.face_pose.input_spec()
         self.face_pose.output_spec()
 

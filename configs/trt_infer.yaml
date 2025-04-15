@@ -3,37 +3,45 @@ models:
     name: "WarpingSpadeModel"
     predict_type: "trt"
     model_path: "./checkpoints/liveportrait_onnx/warping_spade-fix.trt"
+    grid_sample_plugin_path: "/home/user/grid-sample3d-trt-plugin/build/libgrid_sample_3d_plugin.so"
   motion_extractor:
     name: "MotionExtractorModel"
     predict_type: "trt"
     model_path: "./checkpoints/liveportrait_onnx/motion_extractor.trt"
+    grid_sample_plugin_path: "/home/user/grid-sample3d-trt-plugin/build/libgrid_sample_3d_plugin.so"
   landmark:
     name: "LandmarkModel"
     predict_type: "trt"
     model_path: "./checkpoints/liveportrait_onnx/landmark.trt"
+    grid_sample_plugin_path: "/home/user/grid-sample3d-trt-plugin/build/libgrid_sample_3d_plugin.so"
   face_analysis:
     name: "FaceAnalysisModel"
     predict_type: "trt"
     model_path:
       - "./checkpoints/liveportrait_onnx/retinaface_det_static.trt"
       - "./checkpoints/liveportrait_onnx/face_2dpose_106_static.trt"
+    grid_sample_plugin_path: "/home/user/grid-sample3d-trt-plugin/build/libgrid_sample_3d_plugin.so"
   app_feat_extractor:
     name: "AppearanceFeatureExtractorModel"
     predict_type: "trt"
     model_path: "./checkpoints/liveportrait_onnx/appearance_feature_extractor.trt"
+    grid_sample_plugin_path: "/home/user/grid-sample3d-trt-plugin/build/libgrid_sample_3d_plugin.so"
   stitching:
     name: "StitchingModel"
     predict_type: "trt"
     model_path: "./checkpoints/liveportrait_onnx/stitching.trt"
+    grid_sample_plugin_path: "/home/user/grid-sample3d-trt-plugin/build/libgrid_sample_3d_plugin.so"
   stitching_eye_retarget:
     name: "StitchingModel"
     predict_type: "trt"
     model_path: "./checkpoints/liveportrait_onnx/stitching_eye.trt"
+    grid_sample_plugin_path: "/home/user/grid-sample3d-trt-plugin/build/libgrid_sample_3d_plugin.so"
   stitching_lip_retarget:
     name: "StitchingModel"
     predict_type: "trt"
     model_path: "./checkpoints/liveportrait_onnx/stitching_lip.trt"
-
+    grid_sample_plugin_path: "/home/user/grid-sample3d-trt-plugin/build/libgrid_sample_3d_plugin.so"
+    
 animal_models:
   warping_spade:
     name: "WarpingSpadeModel"
@@ -87,7 +95,7 @@ crop_params:
 
 infer_params:
   flag_crop_driving_video: False
-  flag_normalize_lip: True
+  flag_normalize_lip: False
   flag_source_video_eye_retargeting: False
   flag_video_editing_head_rotation: False
   flag_eye_retargeting: False

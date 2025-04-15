@@ -12,3 +12,12 @@ dist
 checkpoints_test
 logs
 third_party
+*.mp4
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.ipynb
+*.ipynb_checkpoints
