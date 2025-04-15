@@ -267,6 +267,228 @@ class FasterLivePortraitPipeline:
             traceback.print_exc()
             return False
 
+    def prepare_source_np(self, src_image_np):
+        """
+        Prepares the source image provided as a NumPy array.
+        Returns True if successful, False otherwise.
+        """
+        print(f"Processing source image numpy array >>>>>>>>")
+        try:
+            self.is_source_video = False # Ensure it's treated as an image
+            self.src_imgs = []
+            self.src_infos = []
+            self.source_path = "numpy_source" # Placeholder name
+
+            img_bgr = src_image_np
+            img_bgr = resize_to_limit(img_bgr, self.cfg.infer_params.source_max_dim,
+                                      self.cfg.infer_params.source_division)
+            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
+            src_faces = []
+            if self.is_animal:
+                 # Placeholder for animal logic if needed, assuming human for now
+                 print("Animal face detection from NumPy array not implemented yet.")
+                 return False
+            else:
+                src_faces = self.model_dict["face_analysis"].predict(img_bgr)
+                if len(src_faces) == 0:
+                    print("No face detected in the source image.")
+                    return False
+                self.src_imgs.append(img_rgb)
+                # Only process the first (largest) face
+                src_faces = src_faces[:1]
+
+            crop_infos = []
+            for i in range(len(src_faces)):
+                lmk = src_faces[i]
+                ret_dct = crop_image(
+                    img_rgb, lmk,
+                    dsize=self.cfg.crop_params.src_dsize, scale=self.cfg.crop_params.src_scale,
+                    vx_ratio=self.cfg.crop_params.src_vx_ratio, vy_ratio=self.cfg.crop_params.src_vy_ratio,
+                )
+                if self.is_animal:
+                     # Placeholder for animal logic if needed
+                     ret_dct["lmk_crop"] = lmk
+                else:
+                    lmk = self.model_dict["landmark"].predict(img_rgb, lmk)
+                    ret_dct["lmk_crop"] = lmk
+                    ret_dct["lmk_crop_256x256"] = ret_dct["lmk_crop"] * 256 / self.cfg.crop_params.src_dsize
+
+                ret_dct["img_crop_256x256"] = cv2.resize(ret_dct["img_crop"], (256, 256), interpolation=cv2.INTER_AREA)
+                crop_infos.append(ret_dct)
+
+            # Process the first face found
+            if not crop_infos:
+                 return False
+
+            src_info_face = []
+            crop_info = crop_infos[0]
+            source_lmk = crop_info['lmk_crop']
+            img_crop, img_crop_256x256 = crop_info['img_crop'], crop_info['img_crop_256x256']
+            pitch, yaw, roll, t, exp, scale, kp = self.model_dict["motion_extractor"].predict(img_crop_256x256)
+            x_s_info = {"pitch": pitch, "yaw": yaw, "roll": roll, "t": t, "exp": exp, "scale": scale, "kp": kp}
+
+            src_info_face.append(copy.deepcopy(x_s_info))
+            x_c_s = kp
+            R_s = get_rotation_matrix(pitch, yaw, roll)
+            f_s = self.model_dict["app_feat_extractor"].predict(img_crop_256x256)
+            x_s = transform_keypoint(pitch, yaw, roll, t, exp, scale, kp)
+            src_info_face.extend([source_lmk.copy(), R_s.copy(), f_s.copy(), x_s.copy(), x_c_s.copy()])
+
+            lip_delta_before_animation = None
+            flag_lip_zero = False
+            if not self.is_animal:
+                flag_lip_zero = self.cfg.infer_params.flag_normalize_lip
+                if flag_lip_zero:
+                    c_d_lip_before_animation = [0.05]
+                    combined_lip_ratio_tensor_before_animation = self.calc_combined_lip_ratio(c_d_lip_before_animation, source_lmk.copy())
+                    if combined_lip_ratio_tensor_before_animation[0][0] < self.cfg.infer_params.lip_normalize_threshold:
+                        flag_lip_zero = False
+                    else:
+                        lip_delta_before_animation = self.model_dict['stitching_lip_retarget'].predict(concat_feat(x_s, combined_lip_ratio_tensor_before_animation))
+
+            src_info_face.append(lip_delta_before_animation.copy() if lip_delta_before_animation is not None else None)
+            src_info_face.append(flag_lip_zero)
+
+            ######## prepare for pasteback ########
+            mask_ori_float = None
+            M = None
+            if self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop and self.cfg.infer_params.flag_stitching:
+                 mask_ori_float = prepare_paste_back(self.mask_crop, crop_info['M_c2o'], dsize=(img_rgb.shape[1], img_rgb.shape[0]))
+                 mask_ori_float = torch.from_numpy(mask_ori_float).to(self.device)
+                 M = torch.from_numpy(crop_info['M_c2o']).to(self.device)
+
+            src_info_face.append(mask_ori_float)
+            src_info_face.append(M)
+
+            self.src_infos.append([src_info_face]) # Store info for the first face
+
+            print(f"Finish processing source image numpy array >>>>>>>>")
+            return True
+        except Exception as e:
+            print(f"Error processing source numpy array: {e}")
+            traceback.print_exc()
+            return False
+
+    def extract_driving_info_np(self, dri_image_np):
+        """
+        Extracts driving information (pose, expression, landmarks, ratios) from a driving image NumPy array.
+        Returns a tuple (x_d_i_info, R_d_i, input_eye_ratio, input_lip_ratio) or None on failure.
+        """
+        try:
+            img_bgr = dri_image_np
+            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+            self.src_lmk_pre = None # Reset previous landmark state for single image processing
+
+            # --- Face and Landmark Detection ---
+            src_face = self.model_dict["face_analysis"].predict(img_bgr)
+            if len(src_face) == 0:
+                print("No face detected in the driving image.")
+                return None
+            lmk = src_face[0] # Use the first detected face
+            lmk = self.model_dict["landmark"].predict(img_rgb, lmk)
+
+            # --- Cropping (Optional but recommended for consistency) ---
+            img_crop_256 = None
+            lmk_crop = None
+            if self.cfg.infer_params.flag_crop_driving_video: # Reuse flag, implies cropping driving input
+                ret_bbox = parse_bbox_from_landmark(
+                    lmk, scale=self.cfg.crop_params.dri_scale,
+                    vx_ratio_crop_video=self.cfg.crop_params.dri_vx_ratio, vy_ratio=self.cfg.crop_params.dri_vy_ratio,
+                )["bbox"]
+                global_bbox = [ret_bbox[0, 0], ret_bbox[0, 1], ret_bbox[2, 0], ret_bbox[2, 1]]
+                ret_dct = crop_image_by_bbox(img_rgb, global_bbox, lmk=lmk, dsize=512, flag_rot=False) # Keep dsize consistent?
+                lmk_crop = ret_dct["lmk_crop"]
+                img_crop_256 = cv2.resize(ret_dct["img_crop"], (256, 256), interpolation=cv2.INTER_AREA)
+            else:
+                # Use the whole image if not cropping
+                lmk_crop = lmk.copy() # Should we still scale/center based on lmk? For now, use raw lmk
+                img_crop_256 = cv2.resize(img_rgb, (256, 256), interpolation=cv2.INTER_AREA)
+
+            if img_crop_256 is None or lmk_crop is None:
+                print("Failed to prepare driving image crop.")
+                return None
+
+            # --- Ratios and Motion Extraction ---
+            input_eye_ratio = calc_eye_close_ratio(lmk_crop[None])
+            input_lip_ratio = calc_lip_close_ratio(lmk_crop[None])
+            pitch, yaw, roll, t, exp, scale, kp = self.model_dict["motion_extractor"].predict(img_crop_256)
+
+            x_d_i_info = {
+                "pitch": pitch, "yaw": yaw, "roll": roll, "t": t, "exp": exp, "scale": scale, "kp": kp
+            }
+            R_d_i = get_rotation_matrix(pitch, yaw, roll)
+
+            return x_d_i_info, R_d_i, input_eye_ratio, input_lip_ratio
+
+        except Exception as e:
+            print(f"Error extracting driving info from numpy array: {e}")
+            traceback.print_exc()
+            return None
+
+    def animate_image(self, src_image_np, dri_image_np):
+        """
+        Animates a source image NumPy array using a driving image NumPy array.
+        Returns the animated image as a NumPy array (BGR) or None on failure.
+        """
+        # 1. Prepare Source
+        if not self.prepare_source_np(src_image_np):
+            print("Source preparation failed.")
+            return None
+
+        # 2. Extract Driving Info
+        driving_info = self.extract_driving_info_np(dri_image_np)
+        if driving_info is None:
+            print("Driving info extraction failed.")
+            return None
+        x_d_i_info, R_d_i, input_eye_ratio, input_lip_ratio = driving_info
+
+        # 3. Prepare for Animation (_run call)
+        if not self.src_infos or not self.src_infos[0]:
+             print("Source info not found after preparation.")
+             return None
+        src_info_list = self.src_infos[0] # Use info for the first face
+        img_src_rgb = self.src_imgs[0] # Get the prepared source image (RGB)
+
+        # Set driving info as the initial state (since it's a single frame)
+        R_d_0 = R_d_i.copy()
+        x_d_0_info = copy.deepcopy(x_d_i_info)
+
+        # Reset smoothers for single image animation
+        self.R_d_smooth = utils.OneEuroFilter(4, 0.3)
+        self.exp_smooth = utils.OneEuroFilter(4, 0.3)
+
+        # Prepare tensor for pasteback background
+        I_p_pstbk_tensor = torch.from_numpy(img_src_rgb).to(self.device).float()
+
+        # 4. Run Animation Core (_run)
+        # Note: _run expects src_info for potentially multiple faces, we use src_info_list which contains info for one face
+        try:
+             out_crop_rgb_np, out_org_rgb_np = self._run(
+                 src_info_list, x_d_i_info, x_d_0_info, R_d_i, R_d_0,
+                 realtime=False, # Not realtime
+                 input_eye_ratio=input_eye_ratio,
+                 input_lip_ratio=input_lip_ratio,
+                 I_p_pstbk=I_p_pstbk_tensor
+             )
+        except Exception as e:
+             print(f"Error during animation (_run): {e}")
+             traceback.print_exc()
+             return None
+
+        # 5. Select Output and Convert to BGR
+        output_rgb_np = None
+        if self.cfg.infer_params.flag_pasteback and out_org_rgb_np is not None:
+             output_rgb_np = out_org_rgb_np # Restore original pasteback logic
+        elif out_crop_rgb_np is not None:
+             output_rgb_np = out_crop_rgb_np
+        else:
+             print("Animation failed to produce an output.")
+             return None
+
+        output_bgr_np = cv2.cvtColor(output_rgb_np, cv2.COLOR_RGB2BGR)
+        return output_bgr_np
+
     def retarget_eye(self, kp_source, eye_close_ratio):
         """
         kp_source: BxNx3
