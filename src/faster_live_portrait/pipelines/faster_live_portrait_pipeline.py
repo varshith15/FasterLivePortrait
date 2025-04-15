@@ -20,7 +20,9 @@ from .. import models
 from ..utils.crop import crop_image, parse_bbox_from_landmark, crop_image_by_bbox, paste_back, paste_back_pytorch
 from ..utils.utils import resize_to_limit, prepare_paste_back, get_rotation_matrix, calc_lip_close_ratio, \
     calc_eye_close_ratio, transform_keypoint, concat_feat
-from src.utils import utils
+from ..utils import utils
+# from ..utils.animal_landmark_runner import XPoseRunner
+from ..utils.utils import make_abs_path
 
 
 class FasterLivePortraitPipeline:
@@ -63,6 +65,7 @@ class FasterLivePortraitPipeline:
         self.model_dict = {}
 
     def init_models(self, **kwargs):
+        grid_sample_plugin_path = self.cfg.get("grid_sample_plugin_path", None)
         if not kwargs.get("is_animal", False):
             logging.info("load Human Model >>>")
             self.is_animal = False
@@ -71,21 +74,16 @@ class FasterLivePortraitPipeline:
                 logging.info(f"loading model: {model_name}")
                 logging.info(self.cfg.models[model_name])
                 self.model_dict[model_name] = getattr(models, self.cfg.models[model_name]["name"])(
-                    **self.cfg.models[model_name])
+                    **self.cfg.models[model_name], grid_sample_plugin_path=grid_sample_plugin_path)
         else:
             logging.info("load Animal Model >>>")
             self.is_animal = True
             self.model_dict = {}
-            from src.utils.animal_landmark_runner import XPoseRunner
-            from src.utils.utils import make_abs_path
-            checkpoint_dir = None
             for model_name in self.cfg.animal_models:
                 logging.info(f"loading model: {model_name}")
                 logging.info(self.cfg.animal_models[model_name])
-                if checkpoint_dir is None and isinstance(self.cfg.animal_models[model_name].model_path, str):
-                    checkpoint_dir = os.path.dirname(self.cfg.animal_models[model_name].model_path)
                 self.model_dict[model_name] = getattr(models, self.cfg.animal_models[model_name]["name"])(
-                    **self.cfg.animal_models[model_name])
+                    **self.cfg.animal_models[model_name], grid_sample_plugin_path=grid_sample_plugin_path)
 
             xpose_config_file_path: str = make_abs_path("models/XPose/config_model/UniPose_SwinT.py")
             xpose_ckpt_path: str = os.path.join(checkpoint_dir, "xpose.pth")
@@ -588,8 +586,8 @@ class FasterLivePortraitPipeline:
                     x_d_exp_smooth = self.exp_smooth.process(x_d_exp_smooth)
                 if self.cfg.infer_params.animation_region in ["all", "exp"]:
                     for idx in [1, 2, 6, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]:
-                        delta_new[:, idx, :] = x_d_exp_smooth[:, idx, :] if self.is_source_video else x_d_i_info['exp'][
-                                                                                                      :, idx, :]
+                        delta_new[:, idx, :] = x_d_exp_smooth[:, idx, :] if self.is_source_video else x_d_i_info['exp'][:,
+                                                                                                      :, idx]
                     delta_new[:, 3:5, 1] = x_d_exp_smooth[:, 3:5, 1] if self.is_source_video else x_d_i_info['exp'][:,
                                                                                                   3:5, 1]
                     delta_new[:, 5, 2] = x_d_exp_smooth[:, 5, 2] if self.is_source_video else x_d_i_info['exp'][:,

@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,7 +6,7 @@ import numpy as np
 
 from ...util.misc import NestedTensor
 # from timm.models.layers import DropPath, to_2tuple, trunc_normal_
-from src.models.util import DropPath, to_2tuple, trunc_normal_
+from ....util import DropPath, to_2tuple, trunc_normal_
 
 
 

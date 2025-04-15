@@ -21,3 +21,4 @@ third_party
 *.tiff
 *.ipynb
 *.ipynb_checkpoints
+temp.py

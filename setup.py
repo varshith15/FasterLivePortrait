@@ -9,8 +9,9 @@ setup(
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
     url='https://github.com/varshith15/FasterLivePortrait',
-    package_dir={'': 'src'},
     packages=find_packages(where='src'),
+    package_dir={'': 'src'},
+    include_package_data=True,
     install_requires=[
         'ffmpeg-python',
         'omegaconf',
@@ -33,7 +34,7 @@ setup(
     ],
     classifiers=[
         'Programming Language :: Python :: 3',
-        'License :: OSI Approved :: MIT License', # Choose an appropriate license
+        'License :: OSI Approved :: MIT License',
         'Operating System :: OS Independent',
     ],
     python_requires='>=3.11',

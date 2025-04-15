@@ -4,7 +4,7 @@ import os
 import time
 import numpy as np
 from omegaconf import OmegaConf
-from src.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeline
+from faster_live_portrait import FasterLivePortraitPipeline
 
 def main():
     parser = argparse.ArgumentParser(description='Faster Live Portrait - Image to Image Animation')

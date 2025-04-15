@@ -22,11 +22,11 @@ def clean_state_dict(state_dict):
     return new_state_dict
 
 
-from src.models.XPose import transforms as T
-from src.models.XPose.models import build_model
-from src.models.XPose.predefined_keypoints import *
-from src.models.XPose.util import box_ops
-from src.models.XPose.util.config import Config
+from ..models.XPose import transforms as T
+from ..models.XPose.models import build_model
+from ..models.XPose.predefined_keypoints import *
+from ..models.XPose.util import box_ops
+from ..models.XPose.util.config import Config
 
 
 class XPoseRunner(object):
