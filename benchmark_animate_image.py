@@ -3,9 +3,10 @@ import cv2
 import os
 import time
 import numpy as np
+import torch
 from tqdm import tqdm
 from omegaconf import OmegaConf
-from src.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeline
+from faster_live_portrait.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeline
 import statistics
 
 def main():
@@ -30,23 +31,37 @@ def main():
     pipe = FasterLivePortraitPipeline(cfg=infer_cfg, is_animal=args.animal)
     print("Pipeline initialized.")
 
-    # --- Image Loading ---
+    # --- Image Loading and Preprocessing ---
     print(f"Loading source image: {args.src_image}")
-    src_image_np = cv2.imread(args.src_image)
-    if src_image_np is None:
+    src_image = cv2.imread(args.src_image)
+    if src_image is None:
         print(f"Error: Failed to load source image at {args.src_image}")
         return
+    
+    # Convert to RGB and resize to 512x512
+    src_image = cv2.cvtColor(src_image, cv2.COLOR_BGR2RGB)
+    src_image = cv2.resize(src_image, (512, 512))
+    
+    # Convert to tensor and move to GPU
+    src_image_tensor = torch.from_numpy(src_image).permute(2, 0, 1).float().cuda() / 255.0
 
     print(f"Loading driving image: {args.dri_image}")
-    dri_image_np = cv2.imread(args.dri_image)
-    if dri_image_np is None:
+    dri_image = cv2.imread(args.dri_image)
+    if dri_image is None:
         print(f"Error: Failed to load driving image at {args.dri_image}")
         return
+    
+    # Convert to RGB and resize to 512x512
+    dri_image = cv2.cvtColor(dri_image, cv2.COLOR_BGR2RGB)
+    dri_image = cv2.resize(dri_image, (512, 512))
+    
+    # Convert to tensor and move to GPU
+    dri_image_tensor = torch.from_numpy(dri_image).permute(2, 0, 1).float().cuda() / 255.0
 
     # --- Warmup Phase ---
     print(f"Starting warmup ({args.warmup_runs} runs)...")
     for i in range(args.warmup_runs):
-        _ = pipe.animate_image(src_image_np, dri_image_np)
+        _ = pipe.animate_image(src_image_tensor, dri_image_tensor)
         print(f"Warmup run {i+1}/{args.warmup_runs} completed.")
     print("Warmup finished.")
 
@@ -55,7 +70,7 @@ def main():
     timings = []
     for i in tqdm(range(args.benchmark_runs)):
         start_time = time.perf_counter() # Use perf_counter for more precise timing
-        animated_image_np = pipe.animate_image(src_image_np, dri_image_np)
+        animated_image_np = pipe.animate_image(src_image_tensor, dri_image_tensor)
         end_time = time.perf_counter()
 
         if animated_image_np is None:

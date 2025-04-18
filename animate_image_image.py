@@ -3,6 +3,7 @@ import cv2
 import os
 import time
 import numpy as np
+import torch
 from omegaconf import OmegaConf
 from faster_live_portrait import FasterLivePortraitPipeline
 
@@ -10,12 +11,11 @@ def main():
     parser = argparse.ArgumentParser(description='Faster Live Portrait - Image to Image Animation')
     parser.add_argument('--src_image', required=True, type=str, help='Path to the source image')
     parser.add_argument('--dri_image', required=True, type=str, help='Path to the driving image')
-    parser.add_argument('--cfg', type=str, default="configs/trt_infer.yaml", help='Path to the inference configuration file (e.g., configs/trt_infer.yaml)')
+    parser.add_argument('--cfg', type=str, default="configs/trt_infer.yaml", help='Path to the inference configuration file')
     parser.add_argument('--output_image', type=str, default="output_animation.png", help='Path to save the animated output image')
     parser.add_argument('--animal', action='store_true', help='Use animal model (currently not fully supported in this script)')
     # Add paste_back argument from run.py logic if needed, defaulting based on config usually
     # parser.add_argument('--paste_back', action='store_true', default=False, help='Paste back to origin image size')
-
 
     args = parser.parse_args()
 
@@ -29,27 +29,40 @@ def main():
 
     # --- Pipeline Initialization ---
     print("Initializing pipeline...")
-    # Note: is_animal is passed but the np methods might need specific animal logic implemented
     pipe = FasterLivePortraitPipeline(cfg=infer_cfg, is_animal=args.animal)
     print("Pipeline initialized.")
 
-    # --- Image Loading ---
+    # --- Image Loading and Preprocessing ---
     print(f"Loading source image: {args.src_image}")
-    src_image_np = cv2.imread(args.src_image)
-    if src_image_np is None:
+    src_image = cv2.imread(args.src_image)
+    if src_image is None:
         print(f"Error: Failed to load source image at {args.src_image}")
         return
+    
+    # Convert to RGB and resize to 512x512
+    src_image = cv2.cvtColor(src_image, cv2.COLOR_BGR2RGB)
+    src_image = cv2.resize(src_image, (512, 512))
+    
+    # Convert to tensor and move to GPU
+    src_image_tensor = torch.from_numpy(src_image).permute(2, 0, 1).float().cuda() / 255.0
 
     print(f"Loading driving image: {args.dri_image}")
-    dri_image_np = cv2.imread(args.dri_image)
-    if dri_image_np is None:
+    dri_image = cv2.imread(args.dri_image)
+    if dri_image is None:
         print(f"Error: Failed to load driving image at {args.dri_image}")
         return
+    
+    # Convert to RGB and resize to 512x512
+    dri_image = cv2.cvtColor(dri_image, cv2.COLOR_BGR2RGB)
+    dri_image = cv2.resize(dri_image, (512, 512))
+    
+    # Convert to tensor and move to GPU
+    dri_image_tensor = torch.from_numpy(dri_image).permute(2, 0, 1).float().cuda() / 255.0
 
     # --- Animation ---
     print("Starting animation...")
     start_time = time.time()
-    animated_image_np = pipe.animate_image(src_image_np, dri_image_np)
+    animated_image_np = pipe.animate_image(src_image_tensor, dri_image_tensor)
     end_time = time.time()
 
     if animated_image_np is None:
@@ -65,7 +78,9 @@ def main():
         print(f"Created output directory: {output_dir}")
 
     try:
-        cv2.imwrite(args.output_image, animated_image_np)
+        # Convert back to BGR for saving
+        animated_image_bgr = cv2.cvtColor(animated_image_np, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(args.output_image, animated_image_bgr)
         print(f"Animated image saved to: {args.output_image}")
     except Exception as e:
         print(f"Error saving output image: {e}")
