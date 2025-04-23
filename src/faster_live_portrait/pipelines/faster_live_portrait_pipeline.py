@@ -347,24 +347,8 @@ class FasterLivePortraitPipeline:
             self.src_imgs = []
             self.src_infos = []
             self.source_path = "tensor_source"
-
-            # print(type(src_image_tensor))
-            # src_image_tensor_temp = src_image_tensor * 255.0
-            # src_image_tensor_temp = src_image_tensor_temp.to(torch.uint8)
-            # Convert to RGB if needed and keep a copy for face detection
-            # with prof("CPU TO GPU MOVEMENT"):
-            #     if src_image_tensor.shape[0] == 3:
-            #         src_image_bgr = src_image_tensor.permute(1, 2, 0).cpu().numpy() * 255.0
-            #         src_image_bgr = src_image_bgr.astype(np.uint8)
-            #         src_image_bgr = cv2.cvtColor(src_image_bgr, cv2.COLOR_RGB2BGR)
-            #     else:
-            #         src_image_bgr = src_image_tensor.cpu().numpy() * 255.0
-            #         src_image_bgr = src_image_bgr.astype(np.uint8)
-
-            # print(src_image_bgr)
+            assert src_image_tensor.shape[2] == 3 and src_image_tensor.shape[0] == 512 and src_image_tensor.shape[1] == 512, "src_image_tensor must be a 3x512x512 tensor"
             src_image_bgr = src_image_tensor
-            # print(type(src_image_bgr))
-            # src_image_bgr = cv2.cvtColor(src_image_bgr, cv2.COLOR_RGB2BGR) # Removed: Input is likely already BGR
 
             logging.info("Getting face landmarks for source image...")
             # Get face landmarks using BGR image
@@ -390,7 +374,6 @@ class FasterLivePortraitPipeline:
                 # Get motion info using RGB image
                 logging.info("Getting motion info...")
                 src_image_rgb = cv2.cvtColor(src_image_bgr, cv2.COLOR_BGR2RGB)
-                # Resize to 256x256 for motion extractor
                 src_image_rgb_256 = cv2.resize(src_image_rgb, (256, 256))
             
             with prof("motion_extractor.predict"):
@@ -429,20 +412,7 @@ class FasterLivePortraitPipeline:
 
     def extract_driving_info_tensor(self, dri_image_tensor):
         try:
-            # Ensure input is 512x512 and float32
-            # if dri_image_tensor.shape[1] != 512 or dri_image_tensor.shape[2] != 512:
-            #     dri_image_tensor = F.interpolate(dri_image_tensor.unsqueeze(0), size=(512, 512), mode='bilinear', align_corners=False).squeeze(0)
-            # dri_image_tensor = dri_image_tensor.float()
-
-            # Convert to RGB if needed and keep a copy for face detection
-            # if dri_image_tensor.shape[0] == 3:
-            #     dri_image_bgr = dri_image_tensor.permute(1, 2, 0).cpu().numpy() * 255.0
-            #     dri_image_bgr = dri_image_bgr.astype(np.uint8)
-            #     dri_image_bgr = cv2.cvtColor(dri_image_bgr, cv2.COLOR_RGB2BGR)
-            # else:
-            #     dri_image_bgr = dri_image_tensor.cpu().numpy() * 255.0
-            #     dri_image_bgr = dri_image_bgr.astype(np.uint8)
-
+            assert dri_image_tensor.shape[2] == 3 and dri_image_tensor.shape[0] == 512 and dri_image_tensor.shape[1] == 512, "dri_image_tensor must be a 3x512x512 tensor"
             dri_image_bgr = dri_image_tensor
 
             logging.info("Getting face landmarks for driving image...")
@@ -483,22 +453,24 @@ class FasterLivePortraitPipeline:
     def animate_image(self, src_image_tensor, dri_image_tensor):
         try:
             logging.info("Starting source preparation...")
-            if not self.prepare_source_tensor(src_image_tensor):
-                logging.error("Source preparation failed.")
-                return None
+            with prof("prepare_source_tensor"):
+                if not self.prepare_source_tensor(src_image_tensor):
+                    logging.error("Source preparation failed.")
+                    return None
 
             logging.info("Starting driving info extraction...")
-            driving_info = self.extract_driving_info_tensor(dri_image_tensor)
-            if driving_info is None:
-                logging.error("Driving info extraction failed.")
-                return None
+            with prof("extract_driving_info_tensor"):
+                driving_info = self.extract_driving_info_tensor(dri_image_tensor)
+                if driving_info is None:
+                    logging.error("Driving info extraction failed.")
+                    return None
             x_d_i_info, R_d_i, input_lip_ratio = driving_info
 
             if not self.src_infos or not self.src_infos[0]:
                 logging.error("Source info not found after preparation.")
                 return None
             src_info_list = self.src_infos[0]
-            img_src_rgb = self.src_imgs[0]
+            # img_src_rgb = self.src_imgs[0] # This variable is unused
 
             R_d_0 = R_d_i.clone()
             x_d_0_info = copy.deepcopy(x_d_i_info)
@@ -508,12 +480,13 @@ class FasterLivePortraitPipeline:
 
             logging.info("Starting animation process...")
             try:
-                out_crop_rgb_np, out_org_rgb_np = self._run(
-                    src_info_list, x_d_i_info, x_d_0_info, R_d_i, R_d_0,
-                    realtime=False,
-                    input_eye_ratio=None,
-                    input_lip_ratio=input_lip_ratio,
-                )
+                with prof("_run animation"):
+                    out_crop_rgb_np, out_org_rgb_np = self._run(
+                        src_info_list, x_d_i_info, x_d_0_info, R_d_i, R_d_0,
+                        realtime=False,
+                        input_eye_ratio=None,
+                        input_lip_ratio=input_lip_ratio,
+                    )
             except Exception as e:
                 logging.error(f"Error during _run: {str(e)}")
                 logging.error(traceback.format_exc())
