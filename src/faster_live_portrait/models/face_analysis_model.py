@@ -170,25 +170,27 @@ class FaceAnalysisModel:
 
     def detect_face(self, *data):
         img = data[0]  # BGR mode
-        im_ratio = float(img.shape[0]) / img.shape[1]
-        input_size = self.input_size
-        model_ratio = float(input_size[1]) / input_size[0]
-        if im_ratio > model_ratio:
-            new_height = input_size[1]
-            new_width = int(new_height / im_ratio)
-        else:
-            new_width = input_size[0]
-            new_height = int(new_width * im_ratio)
-        det_scale = float(new_height) / img.shape[0]
-        resized_img = cv2.resize(img, (new_width, new_height))
-        det_img = np.zeros((input_size[1], input_size[0], 3), dtype=np.uint8)
-        det_img[:new_height, :new_width, :] = resized_img
+        # img = img * 255.0
+        # img = img.to(torch.uint8)
+        # im_ratio = float(img.shape[0]) / img.shape[1]
+        # input_size = self.input_size
+        # model_ratio = float(input_size[1]) / input_size[0]
+        # if im_ratio > model_ratio:
+        #     new_height = input_size[1]
+        #     new_width = int(new_height / im_ratio)
+        # else:
+        #     new_width = input_size[0]
+        #     new_height = int(new_width * im_ratio)
+        det_scale = 1
+        # resized_img = cv2.resize(img, (new_width, new_height))
+        # det_img = np.zeros((input_size[1], input_size[0], 3), dtype=np.uint8)
+        # det_img[:new_height, :new_width, :] = resized_img
+        det_img = img
 
         scores_list = []
         bboxes_list = []
         kpss_list = []
-        input_size = tuple(img.shape[0:2][::-1])
-
+        # input_size = tuple(img.shape[0:2][::-1])
         det_img = cv2.cvtColor(det_img, cv2.COLOR_BGR2RGB)
         det_img = np.transpose(det_img, (2, 0, 1))
         det_img = (det_img - self.input_mean) / self.input_std
@@ -198,6 +200,7 @@ class FaceAnalysisModel:
             inp = self.face_det.inputs[0]
             det_img_torch = torch.from_numpy(det_img[None]).to(device=self.device,
                                                                dtype=numpy_to_torch_dtype_dict[inp['dtype']])
+            # det_img_torch = det_img[None]
             feed_dict[inp['name']] = det_img_torch
             preds_dict = self.face_det.predict(feed_dict, self.cudaStream)
             outs = []

@@ -24,6 +24,7 @@ from ..utils.utils import resize_to_limit, prepare_paste_back, get_rotation_matr
 from ..utils import utils
 # from ..utils.animal_landmark_runner import XPoseRunner
 from ..utils.utils import make_abs_path
+from .profile import prof
 
 
 class FasterLivePortraitPipeline:
@@ -339,6 +340,7 @@ class FasterLivePortraitPipeline:
             traceback.print_exc()
             return False
 
+
     def prepare_source_tensor(self, src_image_tensor):
         try:
             self.is_source_video = False
@@ -346,69 +348,80 @@ class FasterLivePortraitPipeline:
             self.src_infos = []
             self.source_path = "tensor_source"
 
-            # Ensure input is 512x512 and float32
-            if src_image_tensor.shape[1] != 512 or src_image_tensor.shape[2] != 512:
-                src_image_tensor = F.interpolate(src_image_tensor.unsqueeze(0), size=(512, 512), mode='bilinear', align_corners=False).squeeze(0)
-            src_image_tensor = src_image_tensor.float()
-
+            # print(type(src_image_tensor))
+            # src_image_tensor_temp = src_image_tensor * 255.0
+            # src_image_tensor_temp = src_image_tensor_temp.to(torch.uint8)
             # Convert to RGB if needed and keep a copy for face detection
-            if src_image_tensor.shape[0] == 3:
-                src_image_bgr = src_image_tensor.permute(1, 2, 0).cpu().numpy() * 255.0
-                src_image_bgr = src_image_bgr.astype(np.uint8)
-                src_image_bgr = cv2.cvtColor(src_image_bgr, cv2.COLOR_RGB2BGR)
-            else:
-                src_image_bgr = src_image_tensor.cpu().numpy() * 255.0
-                src_image_bgr = src_image_bgr.astype(np.uint8)
+            # with prof("CPU TO GPU MOVEMENT"):
+            #     if src_image_tensor.shape[0] == 3:
+            #         src_image_bgr = src_image_tensor.permute(1, 2, 0).cpu().numpy() * 255.0
+            #         src_image_bgr = src_image_bgr.astype(np.uint8)
+            #         src_image_bgr = cv2.cvtColor(src_image_bgr, cv2.COLOR_RGB2BGR)
+            #     else:
+            #         src_image_bgr = src_image_tensor.cpu().numpy() * 255.0
+            #         src_image_bgr = src_image_bgr.astype(np.uint8)
+
+            # print(src_image_bgr)
+            src_image_bgr = src_image_tensor
+            # print(type(src_image_bgr))
+            # src_image_bgr = cv2.cvtColor(src_image_bgr, cv2.COLOR_RGB2BGR) # Removed: Input is likely already BGR
 
             logging.info("Getting face landmarks for source image...")
             # Get face landmarks using BGR image
-            src_faces = self.model_dict["face_analysis"].predict(src_image_bgr)
+            with prof("face_analysis.predict"):
+                src_faces = self.model_dict["face_analysis"].predict(src_image_bgr)
             if len(src_faces) == 0:
                 logging.error("No face detected in the source image.")
                 return False
 
+            with prof("landmark.predict"):
             # Process first face only
-            lmk = src_faces[0]
-            logging.info("Getting landmark predictions...")
-            lmk = self.model_dict["landmark"].predict(src_image_bgr, lmk)
+                lmk = src_faces[0]
+                logging.info("Getting landmark predictions...")
+                lmk = self.model_dict["landmark"].predict(src_image_bgr, lmk)
             
-            # Convert to tensor and move to device as float32
-            lmk = torch.from_numpy(lmk).float().to(self.device)
+            with prof("post landmark.predict"):
+                # Convert to tensor and move to device as float32
+                lmk = torch.from_numpy(lmk).float().to(self.device)
+                
+                # Prepare source info
+                src_info_face = []
+                
+                # Get motion info using RGB image
+                logging.info("Getting motion info...")
+                src_image_rgb = cv2.cvtColor(src_image_bgr, cv2.COLOR_BGR2RGB)
+                # Resize to 256x256 for motion extractor
+                src_image_rgb_256 = cv2.resize(src_image_rgb, (256, 256))
             
-            # Prepare source info
-            src_info_face = []
+            with prof("motion_extractor.predict"):
+                pitch, yaw, roll, t, exp, scale, kp = self.model_dict["motion_extractor"].predict(src_image_rgb_256)
             
-            # Get motion info using RGB image
-            logging.info("Getting motion info...")
-            src_image_rgb = cv2.cvtColor(src_image_bgr, cv2.COLOR_BGR2RGB)
-            # Resize to 256x256 for motion extractor
-            src_image_rgb_256 = cv2.resize(src_image_rgb, (256, 256))
-            pitch, yaw, roll, t, exp, scale, kp = self.model_dict["motion_extractor"].predict(src_image_rgb_256)
-            x_s_info = {"pitch": pitch, "yaw": yaw, "roll": roll, "t": t, "exp": exp, "scale": scale, "kp": kp}
-            
-            src_info_face.append(copy.deepcopy(x_s_info))
-            x_c_s = torch.from_numpy(kp).float().to(self.device)
-            R_s = torch.from_numpy(get_rotation_matrix(pitch, yaw, roll)).float().to(self.device)
-            
-            logging.info("Getting appearance features...")
-            f_s = torch.from_numpy(self.model_dict["app_feat_extractor"].predict(src_image_rgb_256)).float().to(self.device)
-            x_s = torch.from_numpy(transform_keypoint(pitch, yaw, roll, t, exp, scale, kp)).float().to(self.device)
-            
-            src_info_face.extend([lmk, R_s, f_s, x_s, x_c_s])
-            
-            # Add None for lip delta and flag
-            src_info_face.append(None)
-            src_info_face.append(False)
-            
-            # Add None for mask and M since we're not using pasteback
-            src_info_face.append(None)
-            src_info_face.append(None)
-            
-            self.src_infos.append([src_info_face])
-            self.src_imgs.append(src_image_tensor)
-            
-            logging.info("Source preparation completed successfully")
-            return True
+            with prof("post motion_extractor.predict"):
+                x_s_info = {"pitch": pitch, "yaw": yaw, "roll": roll, "t": t, "exp": exp, "scale": scale, "kp": kp}
+                
+                src_info_face.append(copy.deepcopy(x_s_info))
+                x_c_s = torch.from_numpy(kp).float().to(self.device)
+                R_s = torch.from_numpy(get_rotation_matrix(pitch, yaw, roll)).float().to(self.device)
+                
+                logging.info("Getting appearance features...")
+                f_s = torch.from_numpy(self.model_dict["app_feat_extractor"].predict(src_image_rgb_256)).float().to(self.device)
+                x_s = torch.from_numpy(transform_keypoint(pitch, yaw, roll, t, exp, scale, kp)).float().to(self.device)
+                
+                src_info_face.extend([lmk, R_s, f_s, x_s, x_c_s])
+                
+                # Add None for lip delta and flag
+                src_info_face.append(None)
+                src_info_face.append(False)
+                
+                # Add None for mask and M since we're not using pasteback
+                src_info_face.append(None)
+                src_info_face.append(None)
+                
+                self.src_infos.append([src_info_face])
+                self.src_imgs.append(src_image_tensor)
+                
+                logging.info("Source preparation completed successfully")
+                return True
         except Exception as e:
             logging.error(f"Error processing source tensor: {str(e)}")
             logging.error(traceback.format_exc())
@@ -417,18 +430,20 @@ class FasterLivePortraitPipeline:
     def extract_driving_info_tensor(self, dri_image_tensor):
         try:
             # Ensure input is 512x512 and float32
-            if dri_image_tensor.shape[1] != 512 or dri_image_tensor.shape[2] != 512:
-                dri_image_tensor = F.interpolate(dri_image_tensor.unsqueeze(0), size=(512, 512), mode='bilinear', align_corners=False).squeeze(0)
-            dri_image_tensor = dri_image_tensor.float()
+            # if dri_image_tensor.shape[1] != 512 or dri_image_tensor.shape[2] != 512:
+            #     dri_image_tensor = F.interpolate(dri_image_tensor.unsqueeze(0), size=(512, 512), mode='bilinear', align_corners=False).squeeze(0)
+            # dri_image_tensor = dri_image_tensor.float()
 
             # Convert to RGB if needed and keep a copy for face detection
-            if dri_image_tensor.shape[0] == 3:
-                dri_image_bgr = dri_image_tensor.permute(1, 2, 0).cpu().numpy() * 255.0
-                dri_image_bgr = dri_image_bgr.astype(np.uint8)
-                dri_image_bgr = cv2.cvtColor(dri_image_bgr, cv2.COLOR_RGB2BGR)
-            else:
-                dri_image_bgr = dri_image_tensor.cpu().numpy() * 255.0
-                dri_image_bgr = dri_image_bgr.astype(np.uint8)
+            # if dri_image_tensor.shape[0] == 3:
+            #     dri_image_bgr = dri_image_tensor.permute(1, 2, 0).cpu().numpy() * 255.0
+            #     dri_image_bgr = dri_image_bgr.astype(np.uint8)
+            #     dri_image_bgr = cv2.cvtColor(dri_image_bgr, cv2.COLOR_RGB2BGR)
+            # else:
+            #     dri_image_bgr = dri_image_tensor.cpu().numpy() * 255.0
+            #     dri_image_bgr = dri_image_bgr.astype(np.uint8)
+
+            dri_image_bgr = dri_image_tensor
 
             logging.info("Getting face landmarks for driving image...")
             # Get face landmarks using BGR image
@@ -491,8 +506,6 @@ class FasterLivePortraitPipeline:
             self.R_d_smooth = utils.OneEuroFilter(4, 0.3)
             self.exp_smooth = utils.OneEuroFilter(4, 0.3)
 
-            I_p_pstbk_tensor = img_src_rgb.float()
-
             logging.info("Starting animation process...")
             try:
                 out_crop_rgb_np, out_org_rgb_np = self._run(
@@ -500,7 +513,6 @@ class FasterLivePortraitPipeline:
                     realtime=False,
                     input_eye_ratio=None,
                     input_lip_ratio=input_lip_ratio,
-                    I_p_pstbk=I_p_pstbk_tensor
                 )
             except Exception as e:
                 logging.error(f"Error during _run: {str(e)}")
@@ -561,8 +573,7 @@ class FasterLivePortraitPipeline:
 
         return kp_driving_new
 
-    def _run(self, src_info, x_d_i_info, x_d_0_info, R_d_i, R_d_0, realtime, input_eye_ratio, input_lip_ratio,
-             I_p_pstbk, **kwargs):
+    def _run(self, src_info, x_d_i_info, x_d_0_info, R_d_i, R_d_0, realtime, input_eye_ratio, input_lip_ratio, **kwargs):
         out_crop, out_org = None, None
         for j in range(len(src_info)):
             x_s_info, source_lmk, R_s, f_s, x_s, x_c_s, lip_delta_before_animation, flag_lip_zero, mask_ori_float, M = \
@@ -676,8 +687,7 @@ class FasterLivePortraitPipeline:
         R_d_0 = self.R_d_0.copy()
         x_d_0_info = copy.deepcopy(self.x_d_0_info)
         out_crop, I_p_pstbk = self._run(src_info, x_d_i_info, x_d_0_info, R_d_i, R_d_0, realtime, input_eye_ratio,
-                                        input_lip_ratio,
-                                        I_p_pstbk, **kwargs)
+                                        input_lip_ratio, I_p_pstbk, **kwargs)
         return img_crop, out_crop, I_p_pstbk, dri_motion_info
 
     def run_with_pkl(self, dri_motion_info, img_src, src_info, **kwargs):

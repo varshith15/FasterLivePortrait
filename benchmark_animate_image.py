@@ -39,11 +39,11 @@ def main():
         return
     
     # Convert to RGB and resize to 512x512
-    src_image = cv2.cvtColor(src_image, cv2.COLOR_BGR2RGB)
+    # src_image = cv2.cvtColor(src_image, cv2.COLOR_BGR2RGB) # Keep as BGR
     src_image = cv2.resize(src_image, (512, 512))
     
     # Convert to tensor and move to GPU
-    src_image_tensor = torch.from_numpy(src_image).permute(2, 0, 1).float().cuda() / 255.0
+    # src_image_tensor = torch.from_numpy(src_image).permute(2, 0, 1).float().cuda() / 255.0 # Pass NumPy array directly
 
     print(f"Loading driving image: {args.dri_image}")
     dri_image = cv2.imread(args.dri_image)
@@ -52,16 +52,16 @@ def main():
         return
     
     # Convert to RGB and resize to 512x512
-    dri_image = cv2.cvtColor(dri_image, cv2.COLOR_BGR2RGB)
+    # dri_image = cv2.cvtColor(dri_image, cv2.COLOR_BGR2RGB) # Keep as BGR
     dri_image = cv2.resize(dri_image, (512, 512))
     
     # Convert to tensor and move to GPU
-    dri_image_tensor = torch.from_numpy(dri_image).permute(2, 0, 1).float().cuda() / 255.0
+    # dri_image_tensor = torch.from_numpy(dri_image).permute(2, 0, 1).float().cuda() / 255.0 # Pass NumPy array directly
 
     # --- Warmup Phase ---
     print(f"Starting warmup ({args.warmup_runs} runs)...")
     for i in range(args.warmup_runs):
-        _ = pipe.animate_image(src_image_tensor, dri_image_tensor)
+        _ = pipe.animate_image(src_image, dri_image) # Use NumPy arrays
         print(f"Warmup run {i+1}/{args.warmup_runs} completed.")
     print("Warmup finished.")
 
@@ -70,7 +70,7 @@ def main():
     timings = []
     for i in tqdm(range(args.benchmark_runs)):
         start_time = time.perf_counter() # Use perf_counter for more precise timing
-        animated_image_np = pipe.animate_image(src_image_tensor, dri_image_tensor)
+        animated_image_np = pipe.animate_image(src_image, dri_image) # Use NumPy arrays
         end_time = time.perf_counter()
 
         if animated_image_np is None:
