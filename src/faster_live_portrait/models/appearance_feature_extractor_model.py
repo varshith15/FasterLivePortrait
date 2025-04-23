@@ -28,22 +28,27 @@ class AppearanceFeatureExtractorModel(BaseModel):
         return img[None]
 
     def output_process(self, *data):
+        # Return the first element directly (now potentially a tensor)
         return data[0]
 
     def predict_trt(self, *data):
         nvtx.range_push("forward")
         feed_dict = {}
         for i, inp in enumerate(self.predictor.inputs):
-            if isinstance(data[i], torch.Tensor):
-                feed_dict[inp['name']] = data[i]
-            else:
-                feed_dict[inp['name']] = torch.from_numpy(data[i]).to(device=self.device,
-                                                                      dtype=numpy_to_torch_dtype_dict[inp['dtype']])
+            input_data = data[i]
+            if not isinstance(input_data, torch.Tensor):
+                 input_data = torch.from_numpy(input_data).to(device=self.device,
+                                                               dtype=numpy_to_torch_dtype_dict[inp['dtype']])
+            # Ensure tensor is on the correct device (might already be)
+            feed_dict[inp['name']] = input_data.to(device=self.device)
+
         preds_dict = self.predictor.predict(feed_dict, self.cudaStream)
         outs = []
         for i, out in enumerate(self.predictor.outputs):
-            outs.append(preds_dict[out["name"]].cpu().numpy())
+            # Keep the output as a GPU tensor
+            outs.append(preds_dict[out["name"]])
         nvtx.range_pop()
+        # Return list of GPU tensors
         return outs
 
     def predict(self, *data):

@@ -403,13 +403,19 @@ class FasterLivePortraitPipeline:
                 
                 logging.info("Getting appearance features...")
                 t_app_feat_start = time.time() if self._profile_detailed else 0
-                f_s_np = self.model_dict["app_feat_extractor"].predict(src_image_rgb_256)
-                # Add sync for GPU timing if app_feat_extractor uses GPU
+                # Model predict now returns tensor directly when using TRT
+                f_s = self.model_dict["app_feat_extractor"].predict(src_image_rgb_256)
+                
+                # Ensure it's a tensor and on the correct device (might be numpy if not TRT)
+                if not isinstance(f_s, torch.Tensor):
+                    f_s = torch.from_numpy(f_s)
+                f_s = f_s.float().to(self.device)
+                
+                # Add sync for GPU timing (predict call includes inference)
                 if self.device.type == 'cuda':
                     torch.cuda.current_stream().synchronize()
-                t_app_feat_infer_end = time.time() if self._profile_detailed else 0
-                f_s = torch.from_numpy(f_s_np).float().to(self.device)
-                t_app_feat_conv_end = time.time() if self._profile_detailed else 0
+                t_app_feat_end = time.time() if self._profile_detailed else 0 # End time after predict and sync
+                # Note: app_feat_conv time is now zero as conversion is removed/part of predict
                 
                 t_transform_kp_start = time.time() if self._profile_detailed else 0
                 x_s_np = transform_keypoint(pitch, yaw, roll, t, exp, scale, kp)
@@ -435,8 +441,7 @@ class FasterLivePortraitPipeline:
                     time_xs_info = (t_xs_info_end - t_xs_info_start) * 1000
                     time_kp_conv = (t_kp_conv_end - t_kp_conv_start) * 1000
                     time_rot_mat = (t_rot_mat_end - t_rot_mat_start) * 1000
-                    time_app_feat_infer = (t_app_feat_infer_end - t_app_feat_start) * 1000
-                    time_app_feat_conv = (t_app_feat_conv_end - t_app_feat_infer_end) * 1000 # Note: using infer_end as start
+                    time_app_feat_infer = (t_app_feat_end - t_app_feat_start) * 1000
                     time_transform_kp = (t_transform_kp_end - t_transform_kp_start) * 1000
                     time_append = (t_append_end - t_append_start) * 1000
                     time_total_post = (t_post_motion_end - t_post_motion_start) * 1000
@@ -446,7 +451,6 @@ class FasterLivePortraitPipeline:
                     print(f"  - kp_conversion : {time_kp_conv:.2f}")
                     print(f"  - rotation_matrix: {time_rot_mat:.2f}")
                     print(f"  - app_feat_infer: {time_app_feat_infer:.2f}")
-                    print(f"  - app_feat_conv : {time_app_feat_conv:.2f}")
                     print(f"  - transform_kp  : {time_transform_kp:.2f}")
                     print(f"  - list_append   : {time_append:.2f}")
                     print(f"  - Total PostMotion: {time_total_post:.2f}")

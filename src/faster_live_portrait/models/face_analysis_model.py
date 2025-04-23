@@ -384,7 +384,9 @@ class FaceAnalysisModel:
         t_end_detect = time.time() if self._profile_detailed else 0
 
         if bboxes.shape[0] == 0:
-            # --- Handle early exit timing if needed --- 
+            if self._profile_detailed:
+                # Optionally print early exit time if needed
+                pass
             return []
 
         # Prepare batch for pose estimation
@@ -429,7 +431,7 @@ class FaceAnalysisModel:
             landmarks_batch = preds_dict[self.face_pose.outputs[0]["name"]].cpu().numpy()
         else:
             landmarks_batch = self.face_pose.predict(face_batch_np)[0]
-        t_end_infer = time.time() if self._profile_detailed else 0 # Host time before sync
+        t_end_infer = time.time() if self._profile_detailed else 0
 
         # Postprocess landmarks for each face
         t_start_post = time.time() if self._profile_detailed else 0
@@ -449,39 +451,31 @@ class FaceAnalysisModel:
         t_end_post = time.time() if self._profile_detailed else 0
 
         # Sort faces and return landmarks
+        # t_start_sort = time.time() # Can add if needed
         ret = sort_by_direction(ret, 'large-small', None)
         outs = [x.landmark for x in ret]
+        # t_end_sort = time.time()
 
         t_end_total = time.time() if self._profile_detailed else 0
 
         if self._profile_detailed:
-            # Sync for accurate GPU time measurement
+            # Ensure CUDA ops are finished before reporting CPU time for inference
+            # Note: This adds a sync point, which might slightly affect overall perf
+            # but gives more accurate host-side timing for the GPU part.
             if self.predict_type == "trt":
                 torch.cuda.current_stream().synchronize()
                 t_end_infer_synced = time.time()
                 infer_time = (t_end_infer_synced - t_start_infer) * 1000
             else:
                  infer_time = (t_end_infer - t_start_infer) * 1000 # Non-GPU case
-            
-            # Also sync detect_face if it used GPU internally
-            detect_time = (t_end_detect - t_start_detect) * 1000
-            # Assuming detect_face uses the same stream and might have GPU ops
-            if self.predict_type == "trt": 
-                # We already synced the stream, so this reflects detect_face GPU time correctly
-                pass # Already captured by the sync above
-            
-            prep_time = (t_end_prep - t_start_prep) * 1000
-            post_time = (t_end_post - t_start_post) * 1000
-            total_time = (t_end_total - t_start_total) * 1000 # Overall host time
-            # Recalculate total *synced* time if needed
-            # total_synced_time = (t_end_total_synced_perhaps - t_start_total) * 1000
 
             print(f"[PROFILE DETAIL] face_analysis.predict breakdown (ms):")
-            print(f"  - Detect Face : {detect_time:.2f}")
-            print(f"  - Prep Pose Batch: {prep_time:.2f}")
+            print(f"  - Detect Face : {(t_end_detect - t_start_detect) * 1000:.2f}")
+            print(f"  - Prep Pose Batch: {(t_end_prep - t_start_prep) * 1000:.2f}")
             print(f"  - Infer Pose Batch: {infer_time:.2f}")
-            print(f"  - Post Pose Batch: {post_time:.2f}")
-            print(f"  - Total Predict : {total_time:.2f}") # Reporting host-side total
+            print(f"  - Post Pose Batch: {(t_end_post - t_start_post) * 1000:.2f}")
+            # print(f"  - Sort Time : {(t_end_sort - t_start_sort) * 1000:.2f}") # Uncomment if sorting time is suspected
+            print(f"  - Total Predict : {(t_end_total - t_start_total) * 1000:.2f}")
 
         return outs
 
