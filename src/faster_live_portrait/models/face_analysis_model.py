@@ -4,6 +4,7 @@
 # @Project : FasterLivePortrait
 # @FileName: face_analysis_model.py
 import pdb
+import time # Add for potential fallback profiling
 
 import numpy as np
 from insightface.app.common import Face
@@ -138,6 +139,9 @@ class FaceAnalysisModel:
         self.lmk_dim = 2
         self.lmk_num = 212 // self.lmk_dim
 
+        # Profiling flags (optional, can be controlled externally if needed)
+        self._profile_detailed = True # Set to False to disable detailed profiling
+
     def nms(self, dets):
         thresh = self.nms_thresh
         x1 = dets[:, 0]
@@ -170,100 +174,159 @@ class FaceAnalysisModel:
 
     def detect_face(self, *data):
         img = data[0]  # BGR mode
-        # img = img * 255.0
-        # img = img.to(torch.uint8)
-        # im_ratio = float(img.shape[0]) / img.shape[1]
-        # input_size = self.input_size
-        # model_ratio = float(input_size[1]) / input_size[0]
-        # if im_ratio > model_ratio:
-        #     new_height = input_size[1]
-        #     new_width = int(new_height / im_ratio)
-        # else:
-        #     new_width = input_size[0]
-        #     new_height = int(new_width * im_ratio)
-        det_scale = 1
-        # resized_img = cv2.resize(img, (new_width, new_height))
-        # det_img = np.zeros((input_size[1], input_size[0], 3), dtype=np.uint8)
-        # det_img[:new_height, :new_width, :] = resized_img
         det_img = img
+        input_height_orig = img.shape[0]
+        input_width_orig = img.shape[1]
+
+        det_img_rgb = cv2.cvtColor(det_img, cv2.COLOR_BGR2RGB)
+        det_img_transposed = np.transpose(det_img_rgb, (2, 0, 1))
+        det_img_cont = np.ascontiguousarray(det_img_transposed)
+
+        input_tensor_gpu = torch.from_numpy(det_img_cont).to(self.device)
+
+        mean_tensor = torch.tensor([self.input_mean], device=self.device).view(1, -1, 1, 1)
+        std_tensor = torch.tensor([self.input_std], device=self.device).view(1, -1, 1, 1)
+        input_tensor_gpu = input_tensor_gpu.unsqueeze(0)
+        input_tensor_normalized = (input_tensor_gpu - mean_tensor) / std_tensor
+
+        if self.predict_type == "trt":
+            inp = self.face_det.inputs[0]
+            target_dtype = numpy_to_torch_dtype_dict[inp['dtype']]
+            input_tensor = input_tensor_normalized.to(target_dtype)
+        else:
+            input_tensor = input_tensor_normalized.float()
+
+        if self.predict_type == "trt":
+            feed_dict = {self.face_det.inputs[0]['name']: input_tensor}
+            preds_dict = self.face_det.predict(feed_dict, self.cudaStream)
+            output_keys = ["448", "471", "494", "451", "474", "497"]
+            if self.use_kps:
+                output_keys.extend(["454", "477", "500"])
+            if not all(key in preds_dict for key in output_keys):
+                 raise KeyError(f"Missing expected output keys from TRT engine. Expected: {output_keys}, Got: {list(preds_dict.keys())}")
+            outputs_np = [preds_dict[key].cpu().numpy() for key in output_keys]
+        else:
+            outputs_np = self.face_det.predict(input_tensor)
 
         scores_list = []
         bboxes_list = []
         kpss_list = []
-        # input_size = tuple(img.shape[0:2][::-1])
-        det_img = cv2.cvtColor(det_img, cv2.COLOR_BGR2RGB)
-        det_img = np.transpose(det_img, (2, 0, 1))
-        det_img = (det_img - self.input_mean) / self.input_std
-        if self.predict_type == "trt":
-            nvtx.range_push("forward")
-            feed_dict = {}
-            inp = self.face_det.inputs[0]
-            det_img_torch = torch.from_numpy(det_img[None]).to(device=self.device,
-                                                               dtype=numpy_to_torch_dtype_dict[inp['dtype']])
-            # det_img_torch = det_img[None]
-            feed_dict[inp['name']] = det_img_torch
-            preds_dict = self.face_det.predict(feed_dict, self.cudaStream)
-            outs = []
-            for key in ["448", "471", "494", "451", "474", "497", "454", "477", "500"]:
-                outs.append(preds_dict[key].cpu().numpy())
-            o448, o471, o494, o451, o474, o497, o454, o477, o500 = outs
-            nvtx.range_pop()
-        else:
-            o448, o471, o494, o451, o474, o497, o454, o477, o500 = self.face_det.predict(det_img[None])
-        faces_det = [o448, o471, o494, o451, o474, o497, o454, o477, o500]
-        input_height = det_img.shape[1]
-        input_width = det_img.shape[2]
+        input_height = det_img_cont.shape[1]
+        input_width = det_img_cont.shape[2]
         fmc = self.fmc
+
         for idx, stride in enumerate(self._feat_stride_fpn):
-            scores = faces_det[idx]
-            bbox_preds = faces_det[idx + fmc]
+            if idx >= len(outputs_np) or idx + fmc >= len(outputs_np):
+                 print(f"Warning: Output index out of bounds at stride {stride}. Skipping.")
+                 continue
+            if self.use_kps and idx + fmc * 2 >= len(outputs_np):
+                 print(f"Warning: KPS output index out of bounds at stride {stride}. Skipping KPS processing for this stride.")
+                 continue
+
+            scores = outputs_np[idx]
+            bbox_preds = outputs_np[idx + fmc]
             bbox_preds = bbox_preds * stride
+            kps_preds = None
             if self.use_kps:
-                kps_preds = faces_det[idx + fmc * 2] * stride
+                kps_preds = outputs_np[idx + fmc * 2] * stride
+
             height = input_height // stride
             width = input_width // stride
             K = height * width
             key = (height, width, stride)
+
             if key in self.center_cache:
                 anchor_centers = self.center_cache[key]
             else:
-                # solution-3:
                 anchor_centers = np.stack(np.mgrid[:height, :width][::-1], axis=-1).astype(np.float32)
-                # print(anchor_centers.shape)
                 anchor_centers = (anchor_centers * stride).reshape((-1, 2))
                 if self._num_anchors > 1:
                     anchor_centers = np.stack([anchor_centers] * self._num_anchors, axis=1).reshape((-1, 2))
                 if len(self.center_cache) < 100:
                     self.center_cache[key] = anchor_centers
 
+            expected_score_elements = K * self._num_anchors
+            expected_bbox_elements = K * self._num_anchors * 4
+            expected_kps_elements = K * self._num_anchors * 10
+
+            if scores.size != expected_score_elements:
+                print(f"Warning: Score shape mismatch at stride {stride}. Expected {expected_score_elements}, Got {scores.size}. Reshaping.")
+                try:
+                     scores = scores.reshape(-1)
+                except ValueError:
+                     print("Error: Cannot reshape scores. Skipping stride.")
+                     continue
+            if bbox_preds.size != expected_bbox_elements:
+                 print(f"Warning: Bbox shape mismatch at stride {stride}. Expected {expected_bbox_elements}, Got {bbox_preds.size}. Reshaping.")
+                 try:
+                     bbox_preds = bbox_preds.reshape(-1, 4)
+                 except ValueError:
+                     print("Error: Cannot reshape bbox_preds. Skipping stride.")
+                     continue
+            if self.use_kps and kps_preds is not None and kps_preds.size != expected_kps_elements:
+                 print(f"Warning: KPS shape mismatch at stride {stride}. Expected {expected_kps_elements}, Got {kps_preds.size}. Reshaping.")
+                 try:
+                     kps_preds = kps_preds.reshape(-1, 10)
+                 except ValueError:
+                     print("Error: Cannot reshape kps_preds. Skipping KPS this stride.")
+                     kps_preds = None
+
+            anchor_centers = anchor_centers.reshape((-1, 2))
             pos_inds = np.where(scores >= self.det_thresh)[0]
-            bboxes = distance2bbox(anchor_centers, bbox_preds)
+            if len(pos_inds) == 0:
+                continue
+
+            if np.max(pos_inds) >= anchor_centers.shape[0]:
+                 print(f"Warning: pos_inds index out of bounds for anchor_centers at stride {stride}. Skipping.")
+                 continue
+
+            bboxes = distance2bbox(anchor_centers[pos_inds], bbox_preds[pos_inds])
             pos_scores = scores[pos_inds]
-            pos_bboxes = bboxes[pos_inds]
             scores_list.append(pos_scores)
-            bboxes_list.append(pos_bboxes)
-            if self.use_kps:
-                kpss = distance2kps(anchor_centers, kps_preds)
-                # kpss = kps_preds
-                kpss = kpss.reshape((kpss.shape[0], -1, 2))
-                pos_kpss = kpss[pos_inds]
-                kpss_list.append(pos_kpss)
-        scores = np.vstack(scores_list)
-        scores_ravel = scores.ravel()
-        order = scores_ravel.argsort()[::-1]
-        bboxes = np.vstack(bboxes_list) / det_scale
-        if self.use_kps:
-            kpss = np.vstack(kpss_list) / det_scale
-        pre_det = np.hstack((bboxes, scores)).astype(np.float32, copy=False)
-        pre_det = pre_det[order, :]
-        keep = self.nms(pre_det)
-        det = pre_det[keep, :]
-        if self.use_kps:
-            kpss = kpss[order, :, :]
-            kpss = kpss[keep, :, :]
+            bboxes_list.append(bboxes)
+
+            if self.use_kps and kps_preds is not None:
+                 if np.max(pos_inds) >= kps_preds.shape[0]:
+                      print(f"Warning: pos_inds index out of bounds for kps_preds at stride {stride}. Skipping KPS.")
+                 else:
+                     kpss = distance2kps(anchor_centers[pos_inds], kps_preds[pos_inds])
+                     kpss = kpss.reshape((kpss.shape[0], -1, 2))
+                     kpss_list.append(kpss)
+
+        if not scores_list:
+             det = np.empty((0, 5), dtype=np.float32)
+             kpss_final = np.empty((0, 5, 2), dtype=np.float32) if self.use_kps else None
+             return det, kpss_final
+
+        # Ensure scores is 1D after concatenation
+        scores = np.concatenate(scores_list).flatten()
+        bboxes = np.vstack(bboxes_list)
+
+        det_scale = 1
+        bboxes_scaled = bboxes / det_scale
+
+        if self.use_kps and kpss_list:
+            kpss_stacked = np.vstack(kpss_list)
+            kpss_scaled = kpss_stacked / det_scale
         else:
-            kpss = None
-        return det, kpss
+            kpss_scaled = None
+
+        pre_det = np.hstack((bboxes_scaled, scores[:, np.newaxis])).astype(np.float32, copy=False)
+
+        order = scores.argsort()[::-1]
+        pre_det_ordered = pre_det[order, :]
+        keep = self.nms(pre_det_ordered)
+        det = pre_det_ordered[keep, :]
+
+        kpss_final = None
+        if self.use_kps and kpss_scaled is not None:
+            if kpss_scaled.shape[0] == scores.shape[0]:
+                 kpss_ordered = kpss_scaled[order, :, :]
+                 kpss_final = kpss_ordered[keep, :, :]
+            else:
+                 print(f"Warning: Mismatch between KPS count ({kpss_scaled.shape[0]}) and score count ({scores.shape[0]}) before NMS. KPS data might be incorrect.")
+                 kpss_final = None
+        return det, kpss_final
 
     def estimate_face_pose(self, *data):
         """
@@ -312,19 +375,114 @@ class FaceAnalysisModel:
         return pred
 
     def predict(self, *data, **kwargs):
-        bboxes, kpss = self.detect_face(*data)
+        t_start_total = time.time() if self._profile_detailed else 0
+
+        img = data[0]  # Assume first argument is the image
+
+        t_start_detect = time.time() if self._profile_detailed else 0
+        bboxes, kpss = self.detect_face(img)
+        t_end_detect = time.time() if self._profile_detailed else 0
+
         if bboxes.shape[0] == 0:
+            # --- Handle early exit timing if needed --- 
             return []
-        ret = []
+
+        # Prepare batch for pose estimation
+        face_batch = []
+        transforms = []
+        input_size_pose = (192, 192)
+        ret = [] # Keep track of original Face objects
+
+        t_start_prep = time.time() if self._profile_detailed else 0
         for i in range(bboxes.shape[0]):
             bbox = bboxes[i, 0:4]
             det_score = bboxes[i, 4]
-            kps = kpss[i]
+            kps = kpss[i] if self.use_kps and kpss is not None else None
             face = Face(bbox=bbox, kps=kps, det_score=det_score)
-            self.estimate_face_pose(data[0], face)
             ret.append(face)
+
+            w, h = (bbox[2] - bbox[0]), (bbox[3] - bbox[1])
+            center = (bbox[2] + bbox[0]) / 2, (bbox[3] + bbox[1]) / 2
+            rotate = 0
+            _scale = input_size_pose[0] / (max(w, h) * 1.5)
+            aimg, M = face_align.transform(img, center, input_size_pose[0], _scale, rotate)
+            aimg = cv2.cvtColor(aimg, cv2.COLOR_BGR2RGB)
+            aimg = np.transpose(aimg, (2, 0, 1))
+            face_batch.append(aimg)
+            transforms.append(cv2.invertAffineTransform(M))
+        t_end_prep = time.time() if self._profile_detailed else 0
+
+        # Batch inference for pose estimation
+        if not face_batch:
+            return []
+
+        face_batch_np = np.stack(face_batch)
+
+        t_start_infer = time.time() if self._profile_detailed else 0
+        if self.predict_type == "trt":
+            feed_dict = {}
+            inp = self.face_pose.inputs[0]
+            face_batch_torch = torch.from_numpy(face_batch_np).to(device=self.device,
+                                                                   dtype=numpy_to_torch_dtype_dict[inp['dtype']])
+            feed_dict[inp['name']] = face_batch_torch
+            preds_dict = self.face_pose.predict(feed_dict, self.cudaStream)
+            landmarks_batch = preds_dict[self.face_pose.outputs[0]["name"]].cpu().numpy()
+        else:
+            landmarks_batch = self.face_pose.predict(face_batch_np)[0]
+        t_end_infer = time.time() if self._profile_detailed else 0 # Host time before sync
+
+        # Postprocess landmarks for each face
+        t_start_post = time.time() if self._profile_detailed else 0
+        for i in range(landmarks_batch.shape[0]):
+            pred = landmarks_batch[i]
+            pred = pred.reshape((-1, 2))
+            if self.lmk_num < pred.shape[0]:
+                pred = pred[self.lmk_num * -1:, :]
+            pred[:, 0:2] += 1
+            pred[:, 0:2] *= (input_size_pose[0] // 2)
+            # if pred.shape[1] == 3:
+            #     pred[:, 2] *= (input_size_pose[0] // 2)
+
+            IM = transforms[i]
+            pred = face_align.trans_points(pred, IM)
+            ret[i]["landmark"] = pred
+        t_end_post = time.time() if self._profile_detailed else 0
+
+        # Sort faces and return landmarks
         ret = sort_by_direction(ret, 'large-small', None)
         outs = [x.landmark for x in ret]
+
+        t_end_total = time.time() if self._profile_detailed else 0
+
+        if self._profile_detailed:
+            # Sync for accurate GPU time measurement
+            if self.predict_type == "trt":
+                torch.cuda.current_stream().synchronize()
+                t_end_infer_synced = time.time()
+                infer_time = (t_end_infer_synced - t_start_infer) * 1000
+            else:
+                 infer_time = (t_end_infer - t_start_infer) * 1000 # Non-GPU case
+            
+            # Also sync detect_face if it used GPU internally
+            detect_time = (t_end_detect - t_start_detect) * 1000
+            # Assuming detect_face uses the same stream and might have GPU ops
+            if self.predict_type == "trt": 
+                # We already synced the stream, so this reflects detect_face GPU time correctly
+                pass # Already captured by the sync above
+            
+            prep_time = (t_end_prep - t_start_prep) * 1000
+            post_time = (t_end_post - t_start_post) * 1000
+            total_time = (t_end_total - t_start_total) * 1000 # Overall host time
+            # Recalculate total *synced* time if needed
+            # total_synced_time = (t_end_total_synced_perhaps - t_start_total) * 1000
+
+            print(f"[PROFILE DETAIL] face_analysis.predict breakdown (ms):")
+            print(f"  - Detect Face : {detect_time:.2f}")
+            print(f"  - Prep Pose Batch: {prep_time:.2f}")
+            print(f"  - Infer Pose Batch: {infer_time:.2f}")
+            print(f"  - Post Pose Batch: {post_time:.2f}")
+            print(f"  - Total Predict : {total_time:.2f}") # Reporting host-side total
+
         return outs
 
     def __del__(self):
