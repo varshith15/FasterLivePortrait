@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from tqdm import tqdm  # Import tqdm for progress bar
 
-from src.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeline
+from faster_live_portrait.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeline
 
 def extract_audio(video_path, audio_output_path):
     """Extracts audio from video using ffmpeg."""
@@ -53,8 +53,8 @@ def merge_video_audio(video_path, audio_path, output_path):
 
 def main():
     parser = argparse.ArgumentParser(description='Faster Live Portrait - Video to Video Animation')
-    parser.add_argument('--src_video', required=True, type=str, help='Path to the source video')
-    parser.add_argument('--dri_video', required=True, type=str, help='Path to the driving video')
+    parser.add_argument('--src_video', type=str, default="baseline_driving.mp4", help='Path to the source video')
+    parser.add_argument('--dri_video', type=str, default="baseline_lp_resized.mp4", help='Path to the driving video')
     parser.add_argument('--cfg', type=str, default="configs/trt_infer.yaml", help='Path to the inference configuration file')
     parser.add_argument('--output_video', type=str, default="output_animation.mp4", help='Path to save the animated output video')
     parser.add_argument('--animal', action='store_true', help='Use animal model (compatibility depends on pipeline implementation)')
@@ -189,7 +189,10 @@ def main():
 
         start_time = time.time()
         try:
-            animated_image_np = pipe.animate_image(src_frame_np, dri_frame_np)
+            # Resize frames to 512x512 before animation, similar to animate_image_image.py
+            src_frame_resized = cv2.resize(src_frame_np, (512, 512))
+            dri_frame_resized = cv2.resize(dri_frame_np, (512, 512))
+            animated_image_np = pipe.animate_image(src_frame_resized, dri_frame_resized)
         except Exception as e:
             print(f"Error during animation processing frame {processed_frames+1}: {e}")
             # Decide whether to continue or break. Let's try continuing.
