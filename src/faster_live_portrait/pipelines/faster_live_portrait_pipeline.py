@@ -16,7 +16,6 @@ import numpy as np
 import torch
 import logging
 import torch.nn.functional as F
-import time
 
 from .. import models
 from ..utils.crop import crop_image, parse_bbox_from_landmark, crop_image_by_bbox, paste_back, paste_back_pytorch
@@ -25,7 +24,6 @@ from ..utils.utils import resize_to_limit, prepare_paste_back, get_rotation_matr
 from ..utils import utils
 # from ..utils.animal_landmark_runner import XPoseRunner
 from ..utils.utils import make_abs_path
-from .profile import prof
 
 
 class FasterLivePortraitPipeline:
@@ -33,8 +31,6 @@ class FasterLivePortraitPipeline:
         self.cfg = cfg
         self.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         self.model_dict = {}
-        # Initialize the profiling flag
-        self._profile_detailed = kwargs.get("profile_detailed", True)
         self.init(**kwargs)
 
     def init(self, **kwargs):
@@ -359,115 +355,57 @@ class FasterLivePortraitPipeline:
     def prepare_source_tensor(self, src_image_tensor):
         try:
             self.is_source_video = False
-            self.src_imgs = []
-            self.src_infos = []
             self.source_path = "tensor_source"
             assert src_image_tensor.shape[2] == 3 and src_image_tensor.shape[0] == 512 and src_image_tensor.shape[1] == 512, "src_image_tensor must be a 3x512x512 tensor"
             src_image_bgr = src_image_tensor
 
             logging.info("Getting face landmarks for source image...")
-            # Get face landmarks using BGR image
-            with prof("face_analysis.predict"):
-                src_faces = self.model_dict["face_analysis"].predict(src_image_bgr)
+            src_faces = self.model_dict["face_analysis"].predict(src_image_bgr)
             if len(src_faces) == 0:
                 logging.error("No face detected in the source image.")
-                return False
+                return None
 
-            with prof("landmark.predict"):
-            # Process first face only
-                lmk = src_faces[0]
-                logging.info("Getting landmark predictions...")
-                lmk = self.model_dict["landmark"].predict(src_image_bgr, lmk)
+            lmk = src_faces[0]
+            logging.info("Getting landmark predictions...")
+            lmk = self.model_dict["landmark"].predict(src_image_bgr, lmk)
             
-            with prof("post landmark.predict"):
-                # Convert to tensor and move to device as float32
-                lmk = torch.from_numpy(lmk).float().to(self.device)
-                
-                # Prepare source info
-                src_info_face = []
-                
-                # Get motion info using RGB image
-                logging.info("Getting motion info...")
-                src_image_rgb = cv2.cvtColor(src_image_bgr, cv2.COLOR_BGR2RGB)
-                src_image_rgb_256 = cv2.resize(src_image_rgb, (256, 256))
+            lmk = torch.from_numpy(lmk).float().to(self.device)
             
-            with prof("motion_extractor.predict"):
-                pitch, yaw, roll, t, exp, scale, kp = self.model_dict["motion_extractor"].predict(src_image_rgb_256)
+            src_info_face = []
             
-            with prof("post motion_extractor.predict"):
-                t_post_motion_start = time.time() if self._profile_detailed else 0
+            logging.info("Getting motion info...")
+            src_image_rgb = cv2.cvtColor(src_image_bgr, cv2.COLOR_BGR2RGB)
+            src_image_rgb_256 = cv2.resize(src_image_rgb, (256, 256))
+            
+            pitch, yaw, roll, t, exp, scale, kp = self.model_dict["motion_extractor"].predict(src_image_rgb_256)
+            
+            x_s_info = {"pitch": pitch, "yaw": yaw, "roll": roll, "t": t, "exp": exp, "scale": scale, "kp": kp}
+            
+            src_info_face.append(x_s_info)
+            
+            x_c_s = torch.from_numpy(kp).float().to(self.device)
+            
+            R_s_np = get_rotation_matrix(pitch, yaw, roll)
+            R_s = torch.from_numpy(R_s_np).float().to(self.device)
+            
+            logging.info("Getting appearance features...")
+            f_s = self.model_dict["app_feat_extractor"].predict(src_image_rgb_256)
+            
+            if not isinstance(f_s, torch.Tensor):
+                f_s = torch.from_numpy(f_s)
+            f_s = f_s.float().to(self.device)
+            
+            x_s_np = transform_keypoint(pitch, yaw, roll, t, exp, scale, kp)
+            x_s = torch.from_numpy(x_s_np).float().to(self.device)
+            
+            src_info_face.extend([lmk, R_s, f_s, x_s, x_c_s])
+            src_info_face.append(None)
+            src_info_face.append(False)
+            src_info_face.append(None)
+            src_info_face.append(None)
                 
-                t_xs_info_start = time.time() if self._profile_detailed else 0
-                x_s_info = {"pitch": pitch, "yaw": yaw, "roll": roll, "t": t, "exp": exp, "scale": scale, "kp": kp}
-                t_xs_info_end = time.time() if self._profile_detailed else 0
-                
-                src_info_face.append(x_s_info)
-                
-                t_kp_conv_start = time.time() if self._profile_detailed else 0
-                x_c_s = torch.from_numpy(kp).float().to(self.device)
-                t_kp_conv_end = time.time() if self._profile_detailed else 0
-                
-                t_rot_mat_start = time.time() if self._profile_detailed else 0
-                R_s_np = get_rotation_matrix(pitch, yaw, roll)
-                R_s = torch.from_numpy(R_s_np).float().to(self.device)
-                t_rot_mat_end = time.time() if self._profile_detailed else 0
-                
-                logging.info("Getting appearance features...")
-                t_app_feat_start = time.time() if self._profile_detailed else 0
-                # Model predict now returns tensor directly when using TRT
-                f_s = self.model_dict["app_feat_extractor"].predict(src_image_rgb_256)
-                
-                # Ensure it's a tensor and on the correct device (might be numpy if not TRT)
-                if not isinstance(f_s, torch.Tensor):
-                    f_s = torch.from_numpy(f_s)
-                f_s = f_s.float().to(self.device)
-                
-                # Add sync for GPU timing (predict call includes inference)
-                if self.device.type == 'cuda':
-                    torch.cuda.current_stream().synchronize()
-                t_app_feat_end = time.time() if self._profile_detailed else 0 # End time after predict and sync
-                # Note: app_feat_conv time is now zero as conversion is removed/part of predict
-                
-                t_transform_kp_start = time.time() if self._profile_detailed else 0
-                x_s_np = transform_keypoint(pitch, yaw, roll, t, exp, scale, kp)
-                x_s = torch.from_numpy(x_s_np).float().to(self.device)
-                t_transform_kp_end = time.time() if self._profile_detailed else 0
-                
-                t_append_start = time.time() if self._profile_detailed else 0
-                src_info_face.extend([lmk, R_s, f_s, x_s, x_c_s])
-                # Add None for lip delta and flag
-                src_info_face.append(None)
-                src_info_face.append(False)
-                # Add None for mask and M since we're not using pasteback
-                src_info_face.append(None)
-                src_info_face.append(None)
-                t_append_end = time.time() if self._profile_detailed else 0
-                
-                # self.src_infos.append([src_info_face])
-                # self.src_imgs.append(src_image_tensor)
-                t_post_motion_end = time.time() if self._profile_detailed else 0
-
-                if self._profile_detailed:
-                    # Calculate individual step timings (in ms)
-                    time_xs_info = (t_xs_info_end - t_xs_info_start) * 1000
-                    time_kp_conv = (t_kp_conv_end - t_kp_conv_start) * 1000
-                    time_rot_mat = (t_rot_mat_end - t_rot_mat_start) * 1000
-                    time_app_feat_infer = (t_app_feat_end - t_app_feat_start) * 1000
-                    time_transform_kp = (t_transform_kp_end - t_transform_kp_start) * 1000
-                    time_append = (t_append_end - t_append_start) * 1000
-                    time_total_post = (t_post_motion_end - t_post_motion_start) * 1000
-
-                    print("[PROFILE DETAIL] post_motion_extractor breakdown (ms):")
-                    print(f"  - xs_info_dict  : {time_xs_info:.2f}")
-                    print(f"  - kp_conversion : {time_kp_conv:.2f}")
-                    print(f"  - rotation_matrix: {time_rot_mat:.2f}")
-                    print(f"  - app_feat_infer: {time_app_feat_infer:.2f}")
-                    print(f"  - transform_kp  : {time_transform_kp:.2f}")
-                    print(f"  - list_append   : {time_append:.2f}")
-                    print(f"  - Total PostMotion: {time_total_post:.2f}")
-                
-                logging.info("Source preparation completed successfully")
-                return [src_info_face]
+            logging.info("Source preparation completed successfully")
+            return [src_info_face]
         except Exception as e:
             logging.error(f"Error processing source tensor: {str(e)}")
             logging.error(traceback.format_exc())
@@ -517,38 +455,26 @@ class FasterLivePortraitPipeline:
     def animate_image(self, src_image_tensor, dri_image_tensor):
         try:
             logging.info("Starting source preparation...")
-            with prof("prepare_source_tensor"):
-                src_info_list = self.prepare_source_tensor(src_image_tensor)
-                if not src_info_list:
-                    logging.error("Source preparation failed.")
-                    return None
+            src_info_list = self.prepare_source_tensor(src_image_tensor)
+            if not src_info_list:
+                logging.error("Source preparation failed.")
+                return None
 
             logging.info("Starting driving info extraction...")
-            with prof("extract_driving_info_tensor"):
-                driving_info = self.extract_driving_info_tensor(dri_image_tensor)
-                if driving_info is None:
-                    logging.error("Driving info extraction failed.")
-                    return None
+            driving_info = self.extract_driving_info_tensor(dri_image_tensor)
+            if driving_info is None:
+                logging.error("Driving info extraction failed.")
+                return None
             x_d_i_info, R_d_i, input_lip_ratio = driving_info
-
-            # if not self.src_infos or not self.src_infos[0]:
-            #     logging.error("Source info not found after preparation.")
-            #     return None
-            # src_info_list = self.src_infos[0]
-            # img_src_rgb = self.src_imgs[0] # This variable is unused
-
-            R_d_0 = None
-            x_d_0_info = None
 
             logging.info("Starting animation process...")
             try:
-                with prof("_run animation"):
-                    out_crop_rgb_np, _ = self._run(
-                        src_info_list, x_d_i_info, x_d_0_info, R_d_i, R_d_0,
-                        realtime=False,
-                        input_eye_ratio=None,
-                        input_lip_ratio=input_lip_ratio,
-                    )
+                out_crop_rgb_np, _ = self._run(
+                    src_info_list, x_d_i_info, None, R_d_i, None,
+                    realtime=False,
+                    input_eye_ratio=None,
+                    input_lip_ratio=input_lip_ratio,
+                )
             except Exception as e:
                 logging.error(f"Error during _run: {str(e)}")
                 logging.error(traceback.format_exc())
@@ -620,8 +546,6 @@ class FasterLivePortraitPipeline:
             x_s_info, source_lmk, R_s, f_s, x_s, x_c_s, lip_delta_before_animation, flag_lip_zero, mask_ori_float, M = \
                 src_info[j]
 
-            # print(type(x_s_info))
-
             delta_new_np = x_s_info['exp']
             scale_new_np = x_s_info['scale']
             t_new_np = x_s_info['t']
@@ -632,10 +556,9 @@ class FasterLivePortraitPipeline:
 
             t_new_np[..., 2] = 0 
 
-            with prof("convert to tensors"):
-                delta_new = torch.from_numpy(delta_new_np).float().to(self.device)
-                scale_new = torch.from_numpy(scale_new_np).float().to(self.device)
-                t_new = torch.from_numpy(t_new_np).float().to(self.device)
+            delta_new = torch.from_numpy(delta_new_np).float().to(self.device)
+            scale_new = torch.from_numpy(scale_new_np).float().to(self.device)
+            t_new = torch.from_numpy(t_new_np).float().to(self.device)
 
             x_d_i_new = scale_new * (x_c_s @ R_s + delta_new) + t_new
 
