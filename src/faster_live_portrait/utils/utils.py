@@ -124,10 +124,17 @@ def get_rotation_matrix(pitch_, yaw_, roll_):
     return np.transpose(rot, (0, 2, 1))  # transpose
 
 
-def calculate_distance_ratio(lmk: np.ndarray, idx1: int, idx2: int, idx3: int, idx4: int,
-                             eps: float = 1e-6) -> np.ndarray:
-    return (np.linalg.norm(lmk[:, idx1] - lmk[:, idx2], axis=1, keepdims=True) /
-            (np.linalg.norm(lmk[:, idx3] - lmk[:, idx4], axis=1, keepdims=True) + eps))
+def calculate_distance_ratio(lmk: np.ndarray | torch.Tensor, idx1: int, idx2: int, idx3: int, idx4: int,
+                             eps: float = 1e-6) -> np.ndarray | torch.Tensor:
+    if isinstance(lmk, torch.Tensor):
+        # Ensure tensor operations for PyTorch tensors
+        dist12 = torch.linalg.norm(lmk[:, idx1] - lmk[:, idx2], dim=1, keepdim=True)
+        dist34 = torch.linalg.norm(lmk[:, idx3] - lmk[:, idx4], dim=1, keepdim=True)
+        return dist12 / (dist34 + eps)
+    else:
+        # Keep original NumPy operations for NumPy arrays
+        return (np.linalg.norm(lmk[:, idx1] - lmk[:, idx2], axis=1, keepdims=True) /
+                (np.linalg.norm(lmk[:, idx3] - lmk[:, idx4], axis=1, keepdims=True) + eps))
 
 
 def calc_eye_close_ratio(lmk: np.ndarray, target_eye_ratio: np.ndarray = None) -> np.ndarray:
@@ -191,7 +198,16 @@ def transform_keypoint(pitch, yaw, roll, t, exp, scale, kp):
 
 def concat_feat(x, y):
     bs = x.shape[0]
-    return np.concatenate([x.reshape(bs, -1), y.reshape(bs, -1)], axis=1)
+    # Check if inputs are tensors
+    if isinstance(x, torch.Tensor) and isinstance(y, torch.Tensor):
+        # Use torch.cat for tensor concatenation
+        return torch.cat([x.view(bs, -1), y.view(bs, -1)], dim=1)
+    elif isinstance(x, np.ndarray) and isinstance(y, np.ndarray):
+        # Use np.concatenate for numpy array concatenation
+        return np.concatenate([x.reshape(bs, -1), y.reshape(bs, -1)], axis=1)
+    else:
+        # Handle mixed types or unsupported types
+        raise TypeError(f"Unsupported input types for concat_feat: {type(x)}, {type(y)}")
 
 
 def is_image(file_path):

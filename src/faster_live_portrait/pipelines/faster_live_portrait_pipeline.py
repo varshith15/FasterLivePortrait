@@ -102,10 +102,21 @@ class FasterLivePortraitPipeline:
         return combined_eye_ratio_tensor
 
     def calc_combined_lip_ratio(self, c_d_lip_i, source_lmk):
+        # source_lmk might be numpy array or tensor
         c_s_lip = calc_lip_close_ratio(source_lmk[None])
-        c_d_lip_i = np.array(c_d_lip_i).reshape(1, 1)  # 1x1
+        
+        # Ensure c_d_lip_i is compatible for concatenation
+        if isinstance(c_s_lip, torch.Tensor):
+            # Convert c_d_lip_i to tensor on the same device as c_s_lip
+            c_d_lip_i_tensor = torch.tensor(c_d_lip_i, device=c_s_lip.device, dtype=c_s_lip.dtype).reshape(1, 1)
+            # Use torch.cat for tensors
+            combined_lip_ratio_tensor = torch.cat([c_s_lip, c_d_lip_i_tensor], dim=1)  # 1x2
+        else:
+            # Keep original numpy operations
+            c_d_lip_i_np = np.array(c_d_lip_i).reshape(1, 1)  # 1x1
         # [c_s,lip, c_d,lip,i]
-        combined_lip_ratio_tensor = np.concatenate([c_s_lip, c_d_lip_i], axis=1)  # 1x2
+            combined_lip_ratio_tensor = np.concatenate([c_s_lip, c_d_lip_i_np], axis=1)  # 1x2
+            
         return combined_lip_ratio_tensor
 
     def prepare_source(self, source_path, **kwargs):
@@ -575,6 +586,12 @@ class FasterLivePortraitPipeline:
         """
         feat_lip = concat_feat(kp_source, lip_close_ratio)
         delta = self.model_dict['stitching_lip_retarget'].predict(feat_lip)
+        
+        # Ensure delta is a tensor on the correct device
+        if not isinstance(delta, torch.Tensor):
+            delta = torch.from_numpy(delta)
+        delta = delta.to(device=kp_source.device, dtype=kp_source.dtype) # Match kp_source device and dtype
+        
         return delta
 
     def stitching(self, kp_source, kp_driving):
