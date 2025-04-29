@@ -78,7 +78,7 @@ class FasterLivePortraitPipeline:
                 **self.cfg.models[model_name], grid_sample_plugin_path=grid_sample_plugin_path)
 
     def init_vars(self, **kwargs):
-        self.mask_crop = torch.from_numpy(cv2.imread(self.cfg.infer_params.mask_crop_path, cv2.IMREAD_COLOR)).to(self.device)
+        self.mask_crop = cv2.imread(self.cfg.infer_params.mask_crop_path, cv2.IMREAD_COLOR)
         self.frame_id = 0
         self.src_lmk_pre = None
         self.R_d_0 = None
@@ -358,6 +358,7 @@ class FasterLivePortraitPipeline:
             self.source_path = "tensor_source"
             assert src_image_tensor.shape[2] == 3 and src_image_tensor.shape[0] == 512 and src_image_tensor.shape[1] == 512, "src_image_tensor must be a 3x512x512 tensor"
             src_image_bgr = src_image_tensor
+            src_image_rgb = cv2.cvtColor(src_image_bgr, cv2.COLOR_BGR2RGB)
 
             logging.info("Getting face landmarks for source image...")
             src_faces = self.model_dict["face_analysis"].predict(src_image_bgr)
@@ -366,21 +367,23 @@ class FasterLivePortraitPipeline:
                 return None
 
             lmk = src_faces[0]
-            logging.info("Getting landmark predictions...")
-            lmk = self.model_dict["landmark"].predict(src_image_bgr, lmk)
-            
+            logging.debug("Getting landmark predictions...")
+            ret_dct = crop_image(
+                    src_image_rgb, lmk,
+                    dsize=self.cfg.crop_params.src_dsize, scale=self.cfg.crop_params.src_scale,
+                    vx_ratio=self.cfg.crop_params.src_vx_ratio, vy_ratio=self.cfg.crop_params.src_vy_ratio,
+                )
+            lmk = self.model_dict["landmark"].predict(src_image_rgb, lmk)
+
             lmk = torch.from_numpy(lmk).float().to(self.device)
             
-            src_info_face = []
-            
-            logging.info("Getting motion info...")
-            src_image_rgb = cv2.cvtColor(src_image_bgr, cv2.COLOR_BGR2RGB)
-            src_image_rgb_256 = cv2.resize(src_image_rgb, (256, 256))
+            src_info_face = []            
+            logging.debug("Getting motion info...")
+            src_image_rgb_256 = cv2.resize(ret_dct["img_crop"], (256, 256), interpolation=cv2.INTER_AREA)
             
             pitch, yaw, roll, t, exp, scale, kp = self.model_dict["motion_extractor"].predict(src_image_rgb_256)
             
             x_s_info = {"pitch": pitch, "yaw": yaw, "roll": roll, "t": t, "exp": exp, "scale": scale, "kp": kp}
-            
             src_info_face.append(x_s_info)
             
             x_c_s = torch.from_numpy(kp).float().to(self.device)
@@ -397,15 +400,22 @@ class FasterLivePortraitPipeline:
             
             x_s_np = transform_keypoint(pitch, yaw, roll, t, exp, scale, kp)
             x_s = torch.from_numpy(x_s_np).float().to(self.device)
+
+            mask_ori_float = None
+            M = None
+            if self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop and self.cfg.infer_params.flag_stitching:
+                 mask_ori_float = prepare_paste_back(self.mask_crop, ret_dct['M_c2o'], dsize=(src_image_bgr.shape[1], src_image_bgr.shape[0]))
+                 mask_ori_float = torch.from_numpy(mask_ori_float).to(self.device)
+                 M = torch.from_numpy(ret_dct['M_c2o']).to(self.device)
             
             src_info_face.extend([lmk, R_s, f_s, x_s, x_c_s])
             src_info_face.append(None)
             src_info_face.append(False)
-            src_info_face.append(None)
-            src_info_face.append(None)
+            src_info_face.append(mask_ori_float)
+            src_info_face.append(M)
                 
             logging.info("Source preparation completed successfully")
-            return [src_info_face]
+            return [src_info_face], src_image_rgb
         except Exception as e:
             logging.error(f"Error processing source tensor: {str(e)}")
             logging.error(traceback.format_exc())
@@ -415,6 +425,7 @@ class FasterLivePortraitPipeline:
         try:
             assert dri_image_tensor.shape[2] == 3 and dri_image_tensor.shape[0] == 512 and dri_image_tensor.shape[1] == 512, "dri_image_tensor must be a 3x512x512 tensor"
             dri_image_bgr = dri_image_tensor
+            dri_image_rgb = cv2.cvtColor(dri_image_bgr, cv2.COLOR_BGR2RGB)
 
             logging.info("Getting face landmarks for driving image...")
             # Get face landmarks using BGR image
@@ -425,12 +436,11 @@ class FasterLivePortraitPipeline:
 
             lmk = src_face[0]
             logging.info("Getting landmark predictions...")
-            lmk = self.model_dict["landmark"].predict(dri_image_bgr, lmk)
+            lmk = self.model_dict["landmark"].predict(dri_image_rgb, lmk)
             # lmk = torch.from_numpy(lmk).float().to(self.device)
 
             # Get motion info using RGB image
             logging.info("Getting motion info...")
-            dri_image_rgb = cv2.cvtColor(dri_image_bgr, cv2.COLOR_BGR2RGB)
             # Resize to 256x256 for motion extractor
             dri_image_rgb_256 = cv2.resize(dri_image_rgb, (256, 256))
             pitch, yaw, roll, t, exp, scale, kp = self.model_dict["motion_extractor"].predict(dri_image_rgb_256)
@@ -455,7 +465,8 @@ class FasterLivePortraitPipeline:
     def animate_image(self, src_image_tensor, dri_image_tensor):
         try:
             logging.info("Starting source preparation...")
-            src_info_list = self.prepare_source_tensor(src_image_tensor)
+            src_info_list, I_p_pstbk = self.prepare_source_tensor(src_image_tensor)
+
             if not src_info_list:
                 logging.error("Source preparation failed.")
                 return None
@@ -469,11 +480,13 @@ class FasterLivePortraitPipeline:
 
             logging.info("Starting animation process...")
             try:
-                out_crop_rgb_np, _ = self._run(
+                I_p_pstbk = torch.from_numpy(I_p_pstbk).to(self.device).float()
+                out_crop_rgb_np, out_org_rgb_np = self._run(
                     src_info_list, x_d_i_info, None, R_d_i, None,
                     realtime=False,
                     input_eye_ratio=None,
                     input_lip_ratio=input_lip_ratio,
+                    I_p_pstbk=I_p_pstbk
                 )
             except Exception as e:
                 logging.error(f"Error during _run: {str(e)}")
@@ -481,13 +494,15 @@ class FasterLivePortraitPipeline:
                 return None
 
             output_rgb_np = None
-            if out_crop_rgb_np is not None:
+            if self.cfg.infer_params.flag_pasteback and out_org_rgb_np is not None:
+                output_rgb_np = out_org_rgb_np
+            elif out_crop_rgb_np is not None:
                 output_rgb_np = out_crop_rgb_np
             else:
-                logging.error("Animation failed to produce an output.")
+                logging.info("Animation failed to produce an output.")
                 return None
 
-            logging.info("Animation completed successfully")
+            logging.debug("Animation completed successfully")
             return output_rgb_np
 
         except Exception as e:
@@ -540,7 +555,7 @@ class FasterLivePortraitPipeline:
 
         return kp_driving_new
 
-    def _run(self, src_info, x_d_i_info, x_d_0_info, R_d_i, R_d_0, realtime, input_eye_ratio, input_lip_ratio, **kwargs):
+    def _run(self, src_info, x_d_i_info, x_d_0_info, R_d_i, R_d_0, realtime, input_eye_ratio, input_lip_ratio, I_p_pstbk, **kwargs):
         out_crop, out_org = None, None
         for j in range(len(src_info)):
             x_s_info, source_lmk, R_s, f_s, x_s, x_c_s, lip_delta_before_animation, flag_lip_zero, mask_ori_float, M = \
@@ -571,7 +586,12 @@ class FasterLivePortraitPipeline:
             x_d_i_new = x_s + (x_d_i_new - x_s) * self.cfg.infer_params.driving_multiplier
             out_crop = self.model_dict["warping_spade"].predict(f_s, x_s, x_d_i_new)
 
-        return out_crop.to(dtype=torch.uint8).cpu().numpy(), None
+            if self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop and self.cfg.infer_params.flag_stitching:
+                # TODO: pasteback is slow, considering optimize it using multi-threading or GPU
+                # I_p_pstbk = paste_back(out_crop, crop_info['M_c2o'], I_p_pstbk, mask_ori_float)
+                I_p_pstbk = paste_back_pytorch(out_crop, M, I_p_pstbk, mask_ori_float)
+
+        return out_crop.to(dtype=torch.uint8).cpu().numpy(), I_p_pstbk.to(dtype=torch.uint8).cpu().numpy()
 
     def run(self, image, img_src, src_info, **kwargs):
         img_bgr = image
