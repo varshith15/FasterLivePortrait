@@ -39,22 +39,22 @@ class FasterLivePortraitPipeline:
 
     def update_cfg(self, args_user):
         update_ret = False
-        for key in args_user:
+        for key, user_value in args_user.items():
             if key in self.cfg.infer_params:
-                if self.cfg.infer_params[key] != args_user[key]:
+                if self.cfg.infer_params[key] != user_value:
                     update_ret = True
-                logging.info("update infer cfg {} from {} to {}".format(key, self.cfg.infer_params[key], args_user[key]))
-                self.cfg.infer_params[key] = args_user[key]
-            elif key in self.cfg.crop_params:
-                if self.cfg.crop_params[key] != args_user[key]:
-                    update_ret = True
-                logging.info("update crop cfg {} from {} to {}".format(key, self.cfg.crop_params[key], args_user[key]))
-                self.cfg.crop_params[key] = args_user[key]
-            else:
-                if key in self.cfg.infer_params and self.cfg.infer_params[key] != args_user[key]:
-                    update_ret = True
-                logging.info("add {}:{} to infer cfg".format(key, args_user[key]))
-                self.cfg.infer_params[key] = args_user[key]
+                    logging.info(f"update infer_params.{key} from {self.cfg.infer_params[key]} to {user_value}")
+                    self.cfg.infer_params[key] = user_value
+            # Currently only updating infer_params
+            # elif key in self.cfg.crop_params:
+            #     if self.cfg.crop_params[key] != user_value:
+            #         update_ret = True
+            #         logging.info(f"update crop_params.{key} from {self.cfg.crop_params[key]} to {user_value}")
+            #         self.cfg.crop_params[key] = user_value
+            # else:
+            #     logging.info(f"add new key {key}:{user_value} to infer_params")
+            #     self.cfg.infer_params[key] = user_value
+            #     update_ret = True
         return update_ret
 
     def clean_models(self, **kwargs):
@@ -464,21 +464,21 @@ class FasterLivePortraitPipeline:
 
     def animate_image(self, src_image_tensor, dri_image_tensor):
         try:
-            logging.info("Starting source preparation...")
+            logging.debug("Starting source preparation...")
             src_info_list, I_p_pstbk = self.prepare_source_tensor(src_image_tensor)
 
             if not src_info_list:
                 logging.error("Source preparation failed.")
                 return None
 
-            logging.info("Starting driving info extraction...")
+            logging.debug("Starting driving info extraction...")
             driving_info = self.extract_driving_info_tensor(dri_image_tensor)
             if driving_info is None:
                 logging.error("Driving info extraction failed.")
                 return None
             x_d_i_info, R_d_i, input_lip_ratio = driving_info
 
-            logging.info("Starting animation process...")
+            logging.debug("Starting animation process...")
             try:
                 I_p_pstbk = torch.from_numpy(I_p_pstbk).to(self.device).float()
                 out_crop_rgb_np, out_org_rgb_np = self._run(
