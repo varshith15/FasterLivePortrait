@@ -45,16 +45,7 @@ class FasterLivePortraitPipeline:
                     update_ret = True
                     logging.info(f"update infer_params.{key} from {self.cfg.infer_params[key]} to {user_value}")
                     self.cfg.infer_params[key] = user_value
-            # Currently only updating infer_params
-            # elif key in self.cfg.crop_params:
-            #     if self.cfg.crop_params[key] != user_value:
-            #         update_ret = True
-            #         logging.info(f"update crop_params.{key} from {self.cfg.crop_params[key]} to {user_value}")
-            #         self.cfg.crop_params[key] = user_value
-            # else:
-            #     logging.info(f"add new key {key}:{user_value} to infer_params")
-            #     self.cfg.infer_params[key] = user_value
-            #     update_ret = True
+            # TODO: add crop_params update, Currently only updating infer_params
         return update_ret
 
     def clean_models(self, **kwargs):
