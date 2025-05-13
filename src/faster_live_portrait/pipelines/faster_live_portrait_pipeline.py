@@ -47,6 +47,21 @@ class FasterLivePortraitPipeline:
                     self.cfg.infer_params[key] = user_value
             # TODO: add crop_params update, Currently only updating infer_params
         return update_ret
+    
+    def set_cfg_param(self, key, value):
+        container = None
+        if key in self.cfg.infer_params:
+            container = self.cfg.infer_params
+        elif key in self.cfg.crop_params:
+            container = self.cfg.crop_params
+        else:
+            container = self.cfg.infer_params  # fallback
+
+        if container.get(key) != value:
+            print(f"update cfg {key} from {container.get(key)} to {value}")
+            container[key] = value
+            return True
+        return False
 
     def clean_models(self, **kwargs):
         """
