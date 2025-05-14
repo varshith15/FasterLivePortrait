@@ -110,25 +110,31 @@ class FasterLivePortraitPipeline:
         combined_lip_ratio_tensor = np.concatenate([c_s_lip, c_d_lip_i], axis=1)  # 1x2
         return combined_lip_ratio_tensor
 
-    def prepare_source(self, source_path, **kwargs):
+    def prepare_source(self, source_path = None, img_bgr = None, **kwargs):
         try:
-            if utils.is_video(source_path):
-                self.is_source_video = True
-            else:
-                self.is_source_video = False
+            if img_bgr is None and source_path is None:
+                raise ValueError("Either img_bgr or source_path must be provided")
 
-            if self.is_source_video:
-                src_imgs_bgr = []
-                src_vcap = cv2.VideoCapture(source_path)
-                while True:
-                    ret, frame = src_vcap.read()
-                    if not ret:
-                        break
-                    src_imgs_bgr.append(frame)
-                src_vcap.release()
-            else:
-                img_bgr = cv2.imread(source_path, cv2.IMREAD_COLOR)
+            if img_bgr is not None:
                 src_imgs_bgr = [img_bgr]
+            else:
+                if utils.is_video(source_path):
+                    self.is_source_video = True
+                else:
+                    self.is_source_video = False
+
+                if self.is_source_video:
+                    src_imgs_bgr = []
+                    src_vcap = cv2.VideoCapture(source_path)
+                    while True:
+                        ret, frame = src_vcap.read()
+                        if not ret:
+                            break
+                        src_imgs_bgr.append(frame)
+                    src_vcap.release()
+                else:
+                    img_bgr = cv2.imread(source_path, cv2.IMREAD_COLOR)
+                    src_imgs_bgr = [img_bgr]
 
             self.src_imgs = []
             self.src_infos = []

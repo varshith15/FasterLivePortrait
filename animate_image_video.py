@@ -30,7 +30,8 @@ def main():
     infer_cfg = OmegaConf.load(args.cfg)
     pipe = FasterLivePortraitPipeline(cfg=infer_cfg, is_animal=False)
 
-    ret = pipe.prepare_source(args.src_image)
+    img_bgr = cv2.imread(args.src_image, cv2.IMREAD_COLOR)
+    ret = pipe.prepare_source(img_bgr=img_bgr)
     if not ret:
         print(f"Error: No face detected in source image {args.src_image} or other preparation error.")
         return
