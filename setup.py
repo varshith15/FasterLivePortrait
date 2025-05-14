@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='faster_live_portrait',
+    name='faster_live_portrait_std',
     version='0.0.1',
     author='Varshith B',
     author_email='varshith15@gmail.com',

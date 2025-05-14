@@ -1,4 +1,4 @@
-grid_sample_plugin_path: "/home/user/grid-sample3d-trt-plugin/build/libgrid_sample_3d_plugin.so"
+grid_sample_plugin_path: ./checkpoints/liveportrait_onnx/libgrid_sample_3d_plugin.so
 
 models:
   warping_spade:
@@ -90,10 +90,10 @@ crop_params:
 infer_params:
   flag_crop_driving_video: False
   flag_normalize_lip: False
-  flag_source_video_eye_retargeting: False
-  flag_video_editing_head_rotation: False
+  flag_source_video_eye_retargeting: True
+  flag_video_editing_head_rotation: True
   flag_eye_retargeting: False
-  flag_lip_retargeting: False
+  flag_lip_retargeting: True
   flag_stitching: True
   flag_relative_motion: False
   flag_pasteback: True
@@ -107,7 +107,7 @@ infer_params:
   anchor_frame: 0 # TO IMPLEMENT
   mask_crop_path: "./assets/mask_template.png"
   driving_multiplier: 1.0
-  animation_region: "lip"
+  animation_region: "all"
 
   cfg_mode: "incremental"
   cfg_scale: 1.2

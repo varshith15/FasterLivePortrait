@@ -35,8 +35,8 @@ import pickle
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from colorama import Fore, Back, Style
-from src.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeline
-from src.utils.utils import video_has_audio
+from faster_live_portrait_std.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeline
+from faster_live_portrait_std.utils.utils import video_has_audio
 
 if platform.system().lower() == 'windows':
     FFMPEG = "third_party/ffmpeg-7.0.1-full_build/bin/ffmpeg.exe"

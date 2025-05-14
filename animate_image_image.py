@@ -4,12 +4,12 @@ import os
 import time
 import numpy as np
 from omegaconf import OmegaConf
-from faster_live_portrait import FasterLivePortraitPipeline
+from faster_live_portrait_std import FasterLivePortraitPipeline
 
 def main():
     parser = argparse.ArgumentParser(description='Faster Live Portrait - Image to Image Animation')
-    parser.add_argument('--src_image', required=True, type=str, help='Path to the source image')
-    parser.add_argument('--dri_image', required=True, type=str, help='Path to the driving image')
+    parser.add_argument('--src_image', default="s1.jpg", type=str, help='Path to the source image')
+    parser.add_argument('--dri_image', default="d9.jpg", type=str, help='Path to the driving image')
     parser.add_argument('--cfg', type=str, default="configs/trt_infer.yaml", help='Path to the inference configuration file (e.g., configs/trt_infer.yaml)')
     parser.add_argument('--output_image', type=str, default="output_animation.png", help='Path to save the animated output image')
     parser.add_argument('--animal', action='store_true', help='Use animal model (currently not fully supported in this script)')

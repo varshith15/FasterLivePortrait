@@ -5,7 +5,7 @@ import time
 import numpy as np
 from tqdm import tqdm
 from omegaconf import OmegaConf
-from src.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeline
+from faster_live_portrait_std.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeline
 import statistics
 
 def main():

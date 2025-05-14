@@ -6,9 +6,9 @@ import numpy as np
 from omegaconf import OmegaConf
 import subprocess
 import tempfile
-from tqdm import tqdm  # Import tqdm for progress bar
+from tqdm import tqdm
 
-from src.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeline
+from faster_live_portrait_std.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeline
 
 def extract_audio(video_path, audio_output_path):
     """Extracts audio from video using ffmpeg."""

@@ -586,8 +586,8 @@ class FasterLivePortraitPipeline:
                     x_d_exp_smooth = self.exp_smooth.process(x_d_exp_smooth)
                 if self.cfg.infer_params.animation_region in ["all", "exp"]:
                     for idx in [1, 2, 6, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]:
-                        delta_new[:, idx, :] = x_d_exp_smooth[:, idx, :] if self.is_source_video else x_d_i_info['exp'][:,
-                                                                                                      :, idx]
+                        delta_new[:, idx, :] = x_d_exp_smooth[:, idx, :] if self.is_source_video else x_d_i_info['exp'][
+                                                                                                      :, idx, :]
                     delta_new[:, 3:5, 1] = x_d_exp_smooth[:, 3:5, 1] if self.is_source_video else x_d_i_info['exp'][:,
                                                                                                   3:5, 1]
                     delta_new[:, 5, 2] = x_d_exp_smooth[:, 5, 2] if self.is_source_video else x_d_i_info['exp'][:,
