@@ -70,7 +70,9 @@ def main():
         _, _, out_animated_frame, _ = pipe.run(driving_frame_bgr, src_imgs, src_infos, first_frame=first_frame_flag)
 
         if out_animated_frame is None:
-            print(f"Warning: Animation failed for frame {frame_ind}. Skipping.")
+            print(f"Warning: Animation failed for frame {frame_ind}. Using source image instead.")
+            out_animated_frame_bgr = cv2.cvtColor(src_imgs, cv2.COLOR_RGB2BGR)
+            vout.write(out_animated_frame_bgr)
             frame_ind += 1
             continue
 
