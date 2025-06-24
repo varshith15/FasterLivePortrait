@@ -34,7 +34,7 @@ log = logging.getLogger("EngineBuilder")
 def load_plugins(logger: trt.Logger):
     # 加载插件库
     if platform.system().lower() == 'linux':
-        ctypes.CDLL("./checkpoints/liveportrait_onnx/libgrid_sample_3d_plugin.so", mode=ctypes.RTLD_GLOBAL)
+        ctypes.CDLL("/home/user/grid-sample3d-trt-plugin/build/libgrid_sample_3d_plugin.so", mode=ctypes.RTLD_GLOBAL)
     else:
         ctypes.CDLL("./checkpoints/liveportrait_onnx/grid_sample_3d_plugin.dll", mode=ctypes.RTLD_GLOBAL, winmode=0)
     # 初始化TensorRT的插件库
@@ -58,7 +58,7 @@ class EngineBuilder:
 
         self.builder = trt.Builder(self.trt_logger)
         self.config = self.builder.create_builder_config()
-        self.config.max_workspace_size = 12 * (2 ** 30)  # 12 GB
+        self.config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 12 * (2 ** 30))  # 12 GB
 
         profile = self.builder.create_optimization_profile()
 
@@ -69,7 +69,7 @@ class EngineBuilder:
 
         self.config.add_optimization_profile(profile)
         # 严格类型约束
-        self.config.set_flag(trt.BuilderFlag.STRICT_TYPES)
+        # self.config.set_flag(trt.BuilderFlag.STRICT_TYPES)
 
         self.batch_size = None
         self.network = None
@@ -106,7 +106,7 @@ class EngineBuilder:
         for output in outputs:
             log.info("Output '{}' with shape {} and dtype {}".format(output.name, output.shape, output.dtype))
         # assert self.batch_size > 0
-        self.builder.max_batch_size = 1
+        # self.builder.max_batch_size = 1
 
     def create_engine(
             self,
@@ -129,9 +129,10 @@ class EngineBuilder:
             else:
                 self.config.set_flag(trt.BuilderFlag.FP16)
 
-        with self.builder.build_engine(self.network, self.config) as engine, open(engine_path, "wb") as f:
+        serialized_engine = self.builder.build_serialized_network(self.network, self.config)
+        with open(engine_path, "wb") as f:
             log.info("Serializing engine to file: {:}".format(engine_path))
-            f.write(engine.serialize())
+            f.write(serialized_engine)
 
 
 def main(args):

@@ -1,3 +1,5 @@
+grid_sample_plugin_path: ./checkpoints/liveportrait_onnx/libgrid_sample_3d_plugin.so
+
 models:
   warping_spade:
     name: "WarpingSpadeModel"
@@ -87,13 +89,13 @@ crop_params:
 
 infer_params:
   flag_crop_driving_video: False
-  flag_normalize_lip: True
-  flag_source_video_eye_retargeting: False
-  flag_video_editing_head_rotation: False
+  flag_normalize_lip: False
+  flag_source_video_eye_retargeting: True
+  flag_video_editing_head_rotation: True
   flag_eye_retargeting: False
-  flag_lip_retargeting: False
+  flag_lip_retargeting: True
   flag_stitching: True
-  flag_relative_motion: True
+  flag_relative_motion: False
   flag_pasteback: True
   flag_do_crop: True
   flag_do_rot: True

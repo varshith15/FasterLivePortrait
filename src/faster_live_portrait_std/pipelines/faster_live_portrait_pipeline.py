@@ -4,22 +4,25 @@
 # @Project : FasterLivePortrait
 # @FileName: faster_live_portrait_pipeline.py
 
+# TODO: cleanup the code further, it was written for source video and driving image -- we need source image and driving image
+
 import copy
 import os.path
-import pdb
-import time
 import traceback
 from PIL import Image
 import cv2
 from tqdm import tqdm
 import numpy as np
 import torch
+import logging
 
 from .. import models
 from ..utils.crop import crop_image, parse_bbox_from_landmark, crop_image_by_bbox, paste_back, paste_back_pytorch
 from ..utils.utils import resize_to_limit, prepare_paste_back, get_rotation_matrix, calc_lip_close_ratio, \
     calc_eye_close_ratio, transform_keypoint, concat_feat
-from src.utils import utils
+from ..utils import utils
+# from ..utils.animal_landmark_runner import XPoseRunner
+from ..utils.utils import make_abs_path
 
 
 class FasterLivePortraitPipeline:
@@ -33,22 +36,12 @@ class FasterLivePortraitPipeline:
 
     def update_cfg(self, args_user):
         update_ret = False
-        for key in args_user:
+        for key, user_value in args_user.items():
             if key in self.cfg.infer_params:
-                if self.cfg.infer_params[key] != args_user[key]:
+                if self.cfg.infer_params[key] != user_value:
                     update_ret = True
-                print("update infer cfg {} from {} to {}".format(key, self.cfg.infer_params[key], args_user[key]))
-                self.cfg.infer_params[key] = args_user[key]
-            elif key in self.cfg.crop_params:
-                if self.cfg.crop_params[key] != args_user[key]:
-                    update_ret = True
-                print("update crop cfg {} from {} to {}".format(key, self.cfg.crop_params[key], args_user[key]))
-                self.cfg.crop_params[key] = args_user[key]
-            else:
-                if key in self.cfg.infer_params and self.cfg.infer_params[key] != args_user[key]:
-                    update_ret = True
-                print("add {}:{} to infer cfg".format(key, args_user[key]))
-                self.cfg.infer_params[key] = args_user[key]
+                    logging.info(f"update infer_params.{key} from {self.cfg.infer_params[key]} to {user_value}")
+                    self.cfg.infer_params[key] = user_value
         return update_ret
 
     def clean_models(self, **kwargs):
@@ -62,29 +55,25 @@ class FasterLivePortraitPipeline:
         self.model_dict = {}
 
     def init_models(self, **kwargs):
+        grid_sample_plugin_path = self.cfg.get("grid_sample_plugin_path", None)
         if not kwargs.get("is_animal", False):
-            print("load Human Model >>>")
+            logging.info("load Human Model >>>")
             self.is_animal = False
             self.model_dict = {}
             for model_name in self.cfg.models:
-                print(f"loading model: {model_name}")
-                print(self.cfg.models[model_name])
+                logging.info(f"loading model: {model_name}")
+                logging.info(self.cfg.models[model_name])
                 self.model_dict[model_name] = getattr(models, self.cfg.models[model_name]["name"])(
-                    **self.cfg.models[model_name])
+                    **self.cfg.models[model_name], grid_sample_plugin_path=grid_sample_plugin_path)
         else:
-            print("load Animal Model >>>")
+            logging.info("load Animal Model >>>")
             self.is_animal = True
             self.model_dict = {}
-            from src.utils.animal_landmark_runner import XPoseRunner
-            from src.utils.utils import make_abs_path
-            checkpoint_dir = None
             for model_name in self.cfg.animal_models:
-                print(f"loading model: {model_name}")
-                print(self.cfg.animal_models[model_name])
-                if checkpoint_dir is None and isinstance(self.cfg.animal_models[model_name].model_path, str):
-                    checkpoint_dir = os.path.dirname(self.cfg.animal_models[model_name].model_path)
+                logging.info(f"loading model: {model_name}")
+                logging.info(self.cfg.animal_models[model_name])
                 self.model_dict[model_name] = getattr(models, self.cfg.animal_models[model_name]["name"])(
-                    **self.cfg.animal_models[model_name])
+                    **self.cfg.animal_models[model_name], grid_sample_plugin_path=grid_sample_plugin_path)
 
             xpose_config_file_path: str = make_abs_path("models/XPose/config_model/UniPose_SwinT.py")
             xpose_ckpt_path: str = os.path.join(checkpoint_dir, "xpose.pth")
@@ -103,7 +92,6 @@ class FasterLivePortraitPipeline:
         self.R_d_smooth = utils.OneEuroFilter(4, 0.3)
         self.exp_smooth = utils.OneEuroFilter(4, 0.3)
 
-        ## 记录source的信息
         self.source_path = None
         self.src_infos = []
         self.src_imgs = []
@@ -113,37 +101,40 @@ class FasterLivePortraitPipeline:
     def calc_combined_eye_ratio(self, c_d_eyes_i, source_lmk):
         c_s_eyes = calc_eye_close_ratio(source_lmk[None])
         c_d_eyes_i = np.array(c_d_eyes_i).reshape(1, 1)
-        # [c_s,eyes, c_d,eyes,i]
         combined_eye_ratio_tensor = np.concatenate([c_s_eyes, c_d_eyes_i], axis=1)
         return combined_eye_ratio_tensor
 
     def calc_combined_lip_ratio(self, c_d_lip_i, source_lmk):
         c_s_lip = calc_lip_close_ratio(source_lmk[None])
         c_d_lip_i = np.array(c_d_lip_i).reshape(1, 1)  # 1x1
-        # [c_s,lip, c_d,lip,i]
         combined_lip_ratio_tensor = np.concatenate([c_s_lip, c_d_lip_i], axis=1)  # 1x2
         return combined_lip_ratio_tensor
 
-    def prepare_source(self, source_path, **kwargs):
-        print(f"process source:{source_path} >>>>>>>>")
+    def prepare_source(self, source_path = None, img_bgr = None, **kwargs):
         try:
-            if utils.is_video(source_path):
-                self.is_source_video = True
-            else:
-                self.is_source_video = False
+            if img_bgr is None and source_path is None:
+                raise ValueError("Either img_bgr or source_path must be provided")
 
-            if self.is_source_video:
-                src_imgs_bgr = []
-                src_vcap = cv2.VideoCapture(source_path)
-                while True:
-                    ret, frame = src_vcap.read()
-                    if not ret:
-                        break
-                    src_imgs_bgr.append(frame)
-                src_vcap.release()
-            else:
-                img_bgr = cv2.imread(source_path, cv2.IMREAD_COLOR)
+            if img_bgr is not None:
                 src_imgs_bgr = [img_bgr]
+            else:
+                if utils.is_video(source_path):
+                    self.is_source_video = True
+                else:
+                    self.is_source_video = False
+
+                if self.is_source_video:
+                    src_imgs_bgr = []
+                    src_vcap = cv2.VideoCapture(source_path)
+                    while True:
+                        ret, frame = src_vcap.read()
+                        if not ret:
+                            break
+                        src_imgs_bgr.append(frame)
+                    src_vcap.release()
+                else:
+                    img_bgr = cv2.imread(source_path, cv2.IMREAD_COLOR)
+                    src_imgs_bgr = [img_bgr]
 
             self.src_imgs = []
             self.src_infos = []
@@ -171,7 +162,7 @@ class FasterLivePortraitPipeline:
                 else:
                     src_faces = self.model_dict["face_analysis"].predict(img_bgr)
                     if len(src_faces) == 0:
-                        print("No face detected in the this image.")
+                        logging.info("No face detected in the this image.")
                         continue
                     self.src_imgs.append(img_rgb)
                     # 如果是实时，只关注最大的那张脸
@@ -261,11 +252,203 @@ class FasterLivePortraitPipeline:
                     M = torch.from_numpy(crop_info['M_c2o']).to(self.device)
                     src_infos[i].append(M)
                 self.src_infos.append(src_infos[:])
-            print(f"finish process source:{source_path} >>>>>>>>")
+            logging.info(f"finish process source:{source_path} >>>>>>>>")
             return len(self.src_infos) > 0
         except Exception as e:
+            logging.exception(f"Error preparing source {source_path}: {e}")
             traceback.print_exc()
             return False
+
+    def prepare_source_np(self, src_image_np):
+        try:
+            self.is_source_video = False
+            self.src_imgs = []
+            self.src_infos = []
+            self.source_path = "numpy_source"
+
+            img_bgr = src_image_np
+            img_bgr = resize_to_limit(img_bgr, self.cfg.infer_params.source_max_dim,
+                                      self.cfg.infer_params.source_division)
+            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
+            src_faces = []
+            if self.is_animal:
+                 logging.warning("Animal face detection from NumPy array not implemented yet.")
+                 return False
+            else:
+                src_faces = self.model_dict["face_analysis"].predict(img_bgr)
+                if len(src_faces) == 0:
+                    logging.info("No face detected in the source image.")
+                    return False
+                self.src_imgs.append(img_rgb)
+                src_faces = src_faces[:1]
+
+            crop_infos = []
+            for i in range(len(src_faces)):
+                lmk = src_faces[i]
+                ret_dct = crop_image(
+                    img_rgb, lmk,
+                    dsize=self.cfg.crop_params.src_dsize, scale=self.cfg.crop_params.src_scale,
+                    vx_ratio=self.cfg.crop_params.src_vx_ratio, vy_ratio=self.cfg.crop_params.src_vy_ratio,
+                )
+                if self.is_animal:
+                    ret_dct["lmk_crop"] = lmk
+                else:
+                    lmk = self.model_dict["landmark"].predict(img_rgb, lmk)
+                    ret_dct["lmk_crop"] = lmk
+                    ret_dct["lmk_crop_256x256"] = ret_dct["lmk_crop"] * 256 / self.cfg.crop_params.src_dsize
+
+                ret_dct["img_crop_256x256"] = cv2.resize(ret_dct["img_crop"], (256, 256), interpolation=cv2.INTER_AREA)
+                crop_infos.append(ret_dct)
+
+            if not crop_infos:
+                 return False
+
+            src_info_face = []
+            crop_info = crop_infos[0]
+            source_lmk = crop_info['lmk_crop']
+            img_crop, img_crop_256x256 = crop_info['img_crop'], crop_info['img_crop_256x256']
+            pitch, yaw, roll, t, exp, scale, kp = self.model_dict["motion_extractor"].predict(img_crop_256x256)
+            x_s_info = {"pitch": pitch, "yaw": yaw, "roll": roll, "t": t, "exp": exp, "scale": scale, "kp": kp}
+
+            src_info_face.append(copy.deepcopy(x_s_info))
+            x_c_s = kp
+            R_s = get_rotation_matrix(pitch, yaw, roll)
+            f_s = self.model_dict["app_feat_extractor"].predict(img_crop_256x256)
+            x_s = transform_keypoint(pitch, yaw, roll, t, exp, scale, kp)
+            src_info_face.extend([source_lmk.copy(), R_s.copy(), f_s.copy(), x_s.copy(), x_c_s.copy()])
+
+            lip_delta_before_animation = None
+            flag_lip_zero = False
+            if not self.is_animal:
+                flag_lip_zero = self.cfg.infer_params.flag_normalize_lip
+                if flag_lip_zero:
+                    c_d_lip_before_animation = [0.05]
+                    combined_lip_ratio_tensor_before_animation = self.calc_combined_lip_ratio(c_d_lip_before_animation, source_lmk.copy())
+                    if combined_lip_ratio_tensor_before_animation[0][0] < self.cfg.infer_params.lip_normalize_threshold:
+                        flag_lip_zero = False
+                    else:
+                        lip_delta_before_animation = self.model_dict['stitching_lip_retarget'].predict(concat_feat(x_s, combined_lip_ratio_tensor_before_animation))
+
+            src_info_face.append(lip_delta_before_animation.copy() if lip_delta_before_animation is not None else None)
+            src_info_face.append(flag_lip_zero)
+
+            ######## prepare for pasteback ########
+            mask_ori_float = None
+            M = None
+            if self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop and self.cfg.infer_params.flag_stitching:
+                 mask_ori_float = prepare_paste_back(self.mask_crop, crop_info['M_c2o'], dsize=(img_rgb.shape[1], img_rgb.shape[0]))
+                 mask_ori_float = torch.from_numpy(mask_ori_float).to(self.device)
+                 M = torch.from_numpy(crop_info['M_c2o']).to(self.device)
+
+            src_info_face.append(mask_ori_float)
+            src_info_face.append(M)
+
+            self.src_infos.append([src_info_face])
+
+            return True
+        except Exception as e:
+            logging.error(f"Error processing source numpy array: {e}")
+            traceback.print_exc()
+            return False
+
+    def extract_driving_info_np(self, dri_image_np):
+        try:
+            img_bgr = dri_image_np
+            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+            self.src_lmk_pre = None
+
+            src_face = self.model_dict["face_analysis"].predict(img_bgr)
+            if len(src_face) == 0:
+                logging.info("No face detected in the driving image.")
+                return None
+            lmk = src_face[0]
+            lmk = self.model_dict["landmark"].predict(img_rgb, lmk)
+
+            img_crop_256 = None
+            lmk_crop = None
+            if self.cfg.infer_params.flag_crop_driving_video:
+                ret_bbox = parse_bbox_from_landmark(
+                    lmk, scale=self.cfg.crop_params.dri_scale,
+                    vx_ratio_crop_video=self.cfg.crop_params.dri_vx_ratio, vy_ratio=self.cfg.crop_params.dri_vy_ratio,
+                )["bbox"]
+                global_bbox = [ret_bbox[0, 0], ret_bbox[0, 1], ret_bbox[2, 0], ret_bbox[2, 1]]
+                ret_dct = crop_image_by_bbox(img_rgb, global_bbox, lmk=lmk, dsize=512, flag_rot=False) # Keep dsize consistent?
+                lmk_crop = ret_dct["lmk_crop"]
+                img_crop_256 = cv2.resize(ret_dct["img_crop"], (256, 256), interpolation=cv2.INTER_AREA)
+            else:
+                lmk_crop = lmk.copy()
+                img_crop_256 = cv2.resize(img_rgb, (256, 256), interpolation=cv2.INTER_AREA)
+
+            if img_crop_256 is None or lmk_crop is None:
+                logging.info("Failed to prepare driving image crop.")
+                return None
+
+            input_eye_ratio = calc_eye_close_ratio(lmk_crop[None])
+            input_lip_ratio = calc_lip_close_ratio(lmk_crop[None])
+            pitch, yaw, roll, t, exp, scale, kp = self.model_dict["motion_extractor"].predict(img_crop_256)
+
+            x_d_i_info = {
+                "pitch": pitch, "yaw": yaw, "roll": roll, "t": t, "exp": exp, "scale": scale, "kp": kp
+            }
+            R_d_i = get_rotation_matrix(pitch, yaw, roll)
+
+            return x_d_i_info, R_d_i, input_eye_ratio, input_lip_ratio
+
+        except Exception as e:
+            logging.error(f"Error extracting driving info from numpy array: {e}")
+            traceback.print_exc()
+            return None
+
+    def animate_image(self, src_image_np, dri_image_np):
+        if not self.prepare_source_np(src_image_np):
+            logging.info("Source preparation failed.")
+            return None
+
+        driving_info = self.extract_driving_info_np(dri_image_np)
+        if driving_info is None:
+            logging.info("Driving info extraction failed.")
+            return None
+        x_d_i_info, R_d_i, input_eye_ratio, input_lip_ratio = driving_info
+
+        if not self.src_infos or not self.src_infos[0]:
+            logging.info("Source info not found after preparation.")
+            return None
+        src_info_list = self.src_infos[0]
+        img_src_rgb = self.src_imgs[0]
+
+        R_d_0 = R_d_i.copy()
+        x_d_0_info = copy.deepcopy(x_d_i_info)
+
+        self.R_d_smooth = utils.OneEuroFilter(4, 0.3)
+        self.exp_smooth = utils.OneEuroFilter(4, 0.3)
+
+        I_p_pstbk_tensor = torch.from_numpy(img_src_rgb).to(self.device).float()
+
+        try:
+             out_crop_rgb_np, out_org_rgb_np = self._run(
+                 src_info_list, x_d_i_info, x_d_0_info, R_d_i, R_d_0,
+                 realtime=False, # Not realtime
+                 input_eye_ratio=input_eye_ratio,
+                 input_lip_ratio=input_lip_ratio,
+                 I_p_pstbk=I_p_pstbk_tensor
+             )
+        except Exception as e:
+            logging.error(f"Error during animation (_run): {e}")
+            traceback.print_exc()
+            return None
+
+        output_rgb_np = None
+        if self.cfg.infer_params.flag_pasteback and out_org_rgb_np is not None:
+            output_rgb_np = out_org_rgb_np
+        elif out_crop_rgb_np is not None:
+             output_rgb_np = out_crop_rgb_np
+        else:
+            logging.info("Animation failed to produce an output.")
+            return None
+
+        output_bgr_np = cv2.cvtColor(output_rgb_np, cv2.COLOR_RGB2BGR)
+        return output_bgr_np
 
     def retarget_eye(self, kp_source, eye_close_ratio):
         """
@@ -485,16 +668,16 @@ class FasterLivePortraitPipeline:
         I_p_pstbk = torch.from_numpy(img_src).to(self.device).float()
         realtime = kwargs.get("realtime", False)
         if self.cfg.infer_params.flag_crop_driving_video:
-            if self.src_lmk_pre is None:
-                src_face = self.model_dict["face_analysis"].predict(img_bgr)
-                if len(src_face) == 0:
-                    return None, None, None, None
-                lmk = src_face[0]
-                lmk = self.model_dict["landmark"].predict(img_rgb, lmk)
-                self.src_lmk_pre = lmk.copy()
-            else:
-                lmk = self.model_dict["landmark"].predict(img_rgb, self.src_lmk_pre)
-                self.src_lmk_pre = lmk.copy()
+            # if self.src_lmk_pre is None:
+            src_face = self.model_dict["face_analysis"].predict(img_bgr)
+            if len(src_face) == 0:
+                return None, None, None, None
+            lmk = src_face[0]
+            lmk = self.model_dict["landmark"].predict(img_rgb, lmk)
+            self.src_lmk_pre = lmk.copy()
+            # else:
+            #     lmk = self.model_dict["landmark"].predict(img_rgb, self.src_lmk_pre)
+            #     self.src_lmk_pre = lmk.copy()
 
             ret_bbox = parse_bbox_from_landmark(
                 lmk,
@@ -520,16 +703,16 @@ class FasterLivePortraitPipeline:
             img_crop = ret_dct["img_crop"]
             img_crop = cv2.resize(img_crop, (256, 256))
         else:
-            if self.src_lmk_pre is None:
-                src_face = self.model_dict["face_analysis"].predict(img_bgr)
-                if len(src_face) == 0:
-                    return None, None, None, None
-                lmk = src_face[0]
-                lmk = self.model_dict["landmark"].predict(img_rgb, lmk)
-                self.src_lmk_pre = lmk.copy()
-            else:
-                lmk = self.model_dict["landmark"].predict(img_rgb, self.src_lmk_pre)
-                self.src_lmk_pre = lmk.copy()
+            # if self.src_lmk_pre is None:
+            src_face = self.model_dict["face_analysis"].predict(img_bgr)
+            if len(src_face) == 0:
+                return None, None, None, None
+            lmk = src_face[0]
+            lmk = self.model_dict["landmark"].predict(img_rgb, lmk)
+            self.src_lmk_pre = lmk.copy()
+            # else:
+            #     lmk = self.model_dict["landmark"].predict(img_rgb, self.src_lmk_pre)
+            #     self.src_lmk_pre = lmk.copy()
             lmk_crop = lmk.copy()
             img_crop = cv2.resize(img_rgb, (256, 256))
 

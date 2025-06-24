@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # from timm.models.layers import DropPath
-from src.models.util import DropPath
+from ....util import DropPath
 
 
 class FeatureResizer(nn.Module):

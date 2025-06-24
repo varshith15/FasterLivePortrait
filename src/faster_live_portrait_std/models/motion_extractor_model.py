@@ -45,10 +45,7 @@ class MotionExtractorModel(BaseModel):
         return img[None]
 
     def output_process(self, *data):
-        if self.predict_type == "trt":
-            kp, pitch, yaw, roll, t, exp, scale = data
-        else:
-            pitch, yaw, roll, t, exp, scale, kp = data
+        pitch, yaw, roll, t, exp, scale, kp = data
         if self.flag_refine_info:
             bs = kp.shape[0]
             pitch = headpose_pred_to_degree(pitch)[:, None]  # Bx1
